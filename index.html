@@ -1,0 +1,4156 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+管材切割優化系統 v1.9
+================================================================================
+
+版本特色：【餘料管理：獨立分頁模式】
+
+功能佈局：
+-----------
+📐 切割計算頁面（兩欄佈局）
+   ├── 左側：訂單需求 + 批次輸入（文字/STEP/Excel/DXF）
+   └── 右側：切割方案 + 統計資訊
+
+📦 餘料管理頁面（獨立分頁）
+   ├── 左側：新增餘料表單（400px）
+   └── 右側：餘料列表（可捲動，600px高）
+
+系統參數：
+-----------
+- 原料長度顯示：6000mm
+- 實際計算長度：5980mm（扣除20mm手工切割安全餘量）
+- 最小餘料門檻：100mm（小於此長度自動丟棄）
+- 切割損耗：1mm（鋸片）/ 0.2mm（雷射）
+
+核心功能：
+-----------
+✅ STEP 3D幾何解析（支援任意檔名 + 3D bounding box分析）
+✅ Excel包裝明細自動解析
+✅ DXF圖檔上傳解析
+✅ 批次文字輸入解析
+✅ 三種切割優化策略
+✅ 自動餘料管理
+✅ 方案保存與餘料更新
+
+版本歷史：
+-----------
+v1.9 (2026-02-03)
+  - 餘料管理改為獨立分頁模式
+  - 切割計算頁面改為兩欄佈局（更寬敞）
+  - 修復所有變數重複宣告問題
+  - 更新參數：5980mm計算，100mm最小餘料
+
+v1.8.4
+  - 修復 preview/previewContent 變數衝突
+  - 修復缺少大括號的語法錯誤
+  - 更新參數為 5980mm 和 100mm
+
+v1.8
+  - STEP 3D幾何解析
+  - Excel/DXF上傳功能
+
+技術說明：
+-----------
+- 所有可能重複宣告的變數已改用 var（preview, previewContent）
+- 避免 const/let 重複宣告錯誤
+- 大括號已檢查平衡
+- Three.js 警告可忽略（不影響功能）
+
+================================================================================
+-->
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>管材切割優化系統 v1.2.6 手機版 (5980mm, 100mm)</title>
+    <!-- PWA 支援 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="管材切割">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%238B7355' width='100' height='100' rx='20'/><text x='50' y='62' text-anchor='middle' font-size='50' fill='white'>🔧</text></svg>">
+    <!-- 全域錯誤攔截：隱藏非關鍵錯誤 -->
+    <script>
+        window.onerror = function(msg, url, line, col, error) {
+            // 外部 CDN 腳本的跨域錯誤 → 靜默忽略
+            if (msg === 'Script error.' || (url && url.indexOf('cdn.jsdelivr.net') >= 0)) {
+                return true; // 阻止錯誤顯示
+            }
+            return false;
+        };
+    </script>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js" onerror="console.warn('Firebase App SDK 載入失敗，使用離線模式')"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js" onerror="console.warn('Firebase DB SDK 載入失敗，使用離線模式')"></script>
+    <script>
+        // Firebase 初始化（安全模式）
+        var firebaseConnected = false;
+        var isSyncing = false;
+        var db = null;
+        
+        try {
+            if (typeof firebase !== 'undefined' && firebase.initializeApp) {
+                const firebaseConfig = {
+                    apiKey: "AIzaSyAOaCFjtLgtbW25NFyjm6spNjS5kiFm-b4",
+                    authDomain: "pipe-cutting.firebaseapp.com",
+                    databaseURL: "https://pipe-cutting-default-rtdb.firebaseio.com",
+                    projectId: "pipe-cutting",
+                    storageBucket: "pipe-cutting.firebasestorage.app",
+                    messagingSenderId: "129034205782",
+                    appId: "1:129034205782:web:43762d68e1abd4812019f7",
+                    measurementId: "G-BP42R1W8RK"
+                };
+                firebase.initializeApp(firebaseConfig);
+                db = firebase.database();
+                
+                // 監聽連線狀態
+                db.ref('.info/connected').on('value', function(snap) {
+                    firebaseConnected = snap.val() === true;
+                    updateSyncIndicator();
+                });
+            } else {
+                console.warn('Firebase SDK 未載入，使用離線模式');
+            }
+        } catch(e) {
+            console.warn('Firebase 初始化失敗:', e);
+        }
+        
+        function updateSyncIndicator() {
+            var el = document.getElementById('syncStatus');
+            if (!el) return;
+            if (firebaseConnected) {
+                el.innerHTML = '🟢 雲端已連線';
+                el.style.color = '#10B981';
+            } else if (db) {
+                el.innerHTML = '🟡 連線中...';
+                el.style.color = '#F59E0B';
+            } else {
+                el.innerHTML = '🔴 離線模式';
+                el.style.color = '#EF4444';
+            }
+        }
+    </script>
+    <!-- DXF Parser Library -->
+    <script src="https://unpkg.com/dxf-parser@1.4.4/dist/dxf-parser.min.js" crossorigin="anonymous" onerror="console.warn('DXF 解析庫載入失敗')"></script>
+    <!-- Excel Parser Library (SheetJS) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous" onerror="console.warn('Excel 解析庫載入失敗')"></script>
+    <!-- Three.js for 3D geometry parsing -->
+    <!-- Three.js 已移除，STEP 解析使用純 JavaScript 正則表達式 -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: #F5F3F0;
+            padding: 20px;
+            padding-top: calc(20px + env(safe-area-inset-top));
+            padding-bottom: calc(20px + env(safe-area-inset-bottom));
+            padding-left: calc(20px + env(safe-area-inset-left));
+            padding-right: calc(20px + env(safe-area-inset-right));
+            min-height: 100vh;
+        }
+        
+        @media (max-width: 768px) {
+            body {
+                padding: 0;
+                padding-top: env(safe-area-inset-top);
+                padding-bottom: env(safe-area-inset-bottom);
+            }
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: #FEFEFE;
+            border-radius: 2px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #FEFEFE;
+            color: #4A4A4A;
+            padding: 30px 25px 20px;
+            text-align: center;
+            border-bottom: 1px solid #E8E6E3;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            font-weight: 400;
+            letter-spacing: 0.5px;
+        }
+        
+        .specs-bar {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            background: linear-gradient(135deg, #8B7355 0%, #A0826D 100%);
+            padding: 16px 24px;
+            border-radius: 8px;
+            margin: 0 auto;
+            max-width: 700px;
+        }
+        
+        .spec-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .spec-label {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 11px;
+            font-weight: 300;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .spec-value {
+            color: #FFFFFF;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        
+        .spec-divider {
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 20px;
+            font-weight: 200;
+        }
+        
+        .settings-bar {
+            background: #F9F8F6;
+            padding: 18px 25px;
+            border-bottom: 1px solid #E8E6E3;
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            align-items: center;
+        }
+        
+        .setting-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .setting-item label {
+            color: #6A6A6A;
+            font-size: 14px;
+            font-weight: 300;
+        }
+        
+        .setting-item select {
+            padding: 8px 12px;
+            border: 1px solid #D5D3D0;
+            border-radius: 2px;
+            background: #FEFEFE;
+            color: #4A4A4A;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        
+        .setting-item select:focus {
+            outline: none;
+            border-color: #8B7355;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 1px;
+            padding: 0;
+            background: #E8E6E3;
+        }
+        
+        .panel {
+            background: #FEFEFE;
+            border-radius: 0;
+            padding: 25px;
+            box-shadow: none;
+        }
+        
+        .panel h2 {
+            color: #4A4A4A;
+            margin-bottom: 20px;
+            font-size: 16px;
+            border-bottom: 1px solid #E8E6E3;
+            padding-bottom: 12px;
+            font-weight: 400;
+            letter-spacing: 0.3px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 18px;
+            align-items: center;
+        }
+        
+        .input-group label {
+            font-weight: 300;
+            color: #6A6A6A;
+            min-width: 85px;
+            font-size: 14px;
+        }
+        
+        .input-group input,
+        .input-group select {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid #D5D3D0;
+            border-radius: 2px;
+            font-size: 14px;
+            background: #FEFEFE;
+            transition: border-color 0.2s;
+        }
+        
+        .input-group input:focus,
+        .input-group select:focus {
+            outline: none;
+            border-color: #9A8A78;
+            background: #FFFFFF;
+        }
+        
+        .size-input-group {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+        }
+        
+        .size-input-group select,
+        .size-input-group input {
+            flex: 1;
+        }
+        
+        button {
+            padding: 11px 22px;
+            border: 1px solid #D5D3D0;
+            border-radius: 2px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 300;
+            letter-spacing: 0.3px;
+        }
+        
+        .btn-primary {
+            background: #FEFEFE;
+            color: #4A4A4A;
+            border: 1px solid #4A4A4A;
+        }
+        
+        .btn-primary:hover {
+            background: #4A4A4A;
+            color: #FEFEFE;
+        }
+        
+        .btn-success {
+            background: #8B7355;
+            color: #FEFEFE;
+            width: 100%;
+            margin-top: 12px;
+            border: none;
+            padding: 14px;
+        }
+        
+        .btn-success:hover {
+            background: #70614A;
+        }
+        
+        .btn-danger {
+            background: #FEFEFE;
+            color: #8A8A8A;
+            font-size: 12px;
+            border: 1px solid #E8E6E3;
+            padding: 6px 14px;
+        }
+        
+        .btn-danger:hover {
+            background: #F5F3F0;
+            color: #4A4A4A;
+        }
+        
+        .btn-warning {
+            background: #FEFEFE;
+            color: #4A4A4A;
+            border: 1px solid #D5D3D0;
+        }
+        
+        .btn-warning:hover {
+            background: #F5F3F0;
+        }
+        
+        .btn-info {
+            background: #8B7355;
+            color: #FEFEFE;
+            width: 100%;
+            margin-top: 12px;
+            border: none;
+            padding: 14px;
+        }
+        
+        .btn-info:hover {
+            background: #70614A;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            background: #FEFEFE;
+            border-radius: 0;
+            overflow: hidden;
+        }
+        
+        table th {
+            background: #F5F3F0;
+            color: #6A6A6A;
+            padding: 12px;
+            text-align: left;
+            font-weight: 300;
+            font-size: 13px;
+            letter-spacing: 0.3px;
+        }
+        
+        table td {
+            padding: 12px;
+            border-bottom: 1px solid #F5F3F0;
+            color: #4A4A4A;
+            font-size: 14px;
+        }
+        
+        /* 地點選單專用樣式 */
+        .location-select {
+            padding: 6px 8px;
+            border: 1px solid #E8E6E3;
+            border-radius: 3px;
+            font-size: 13px;
+            width: 100%;
+            min-width: 110px;
+            background: white;
+            color: #4A4A4A;
+            cursor: pointer;
+        }
+        
+        .location-select:hover {
+            border-color: #8B7355;
+        }
+        
+        .location-select:focus {
+            outline: none;
+            border-color: #8B7355;
+            box-shadow: 0 0 0 2px rgba(139, 115, 85, 0.1);
+        }
+        
+        table tr:hover {
+            background: #FAFAFA;
+        }
+        
+        .type-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 2px;
+            font-size: 11px;
+            font-weight: 300;
+            background: #F5F3F0;
+            color: #6A6A6A;
+            border: 1px solid #E8E6E3;
+        }
+        
+        .stats-box {
+            background: #F9F8F6;
+            padding: 20px;
+            border-radius: 2px;
+            margin-bottom: 20px;
+            border-left: 3px solid #8B7355;
+        }
+        
+        .stats-box h3 {
+            color: #4A4A4A;
+            margin-bottom: 18px;
+            font-weight: 400;
+            font-size: 15px;
+            letter-spacing: 0.3px;
+        }
+        
+        .stats-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #E8E6E3;
+        }
+        
+        .stats-item:last-child {
+            border-bottom: none;
+        }
+        
+        .stats-label {
+            font-weight: 300;
+            color: #6A6A6A;
+            font-size: 14px;
+        }
+        
+        .stats-value {
+            color: #4A4A4A;
+            font-weight: 400;
+            font-size: 15px;
+        }
+        
+        .result-box {
+            background: #FEFEFE;
+            border: 1px solid #E8E6E3;
+            border-radius: 2px;
+            padding: 18px;
+            margin-bottom: 15px;
+        }
+        
+        .result-box h4 {
+            color: #4A4A4A;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #E8E6E3;
+            font-weight: 400;
+            font-size: 15px;
+        }
+        
+        .cut-visual {
+            background: #F9F8F6;
+            padding: 14px;
+            border-radius: 2px;
+            margin: 12px 0;
+            overflow-x: auto;
+            border: 1px solid #E8E6E3;
+        }
+        
+        .visual-svg {
+            width: 100%;
+            height: 110px;
+            margin: 10px 0;
+        }
+        
+        .cut-segment {
+            fill: #8B7355;
+            stroke: #FEFEFE;
+            stroke-width: 2;
+        }
+        
+        .remnant-segment {
+            fill: #E8E6E3;
+            stroke: #D5D3D0;
+            stroke-width: 1;
+        }
+        
+        .measurement-text {
+            font-size: 11px;
+            fill: #4A4A4A;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        
+        .part-no-text {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            fill: #8B7355;
+        }
+        
+        .measurement-line {
+            stroke: #6A6A6A;
+            stroke-width: 1;
+            stroke-dasharray: 2,2;
+        }
+        
+        .cut-item {
+            margin: 8px 0;
+            color: #4A4A4A;
+            font-size: 13px;
+        }
+        
+        .remnant-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 2px;
+            font-size: 11px;
+            font-weight: 300;
+            margin-left: 10px;
+            letter-spacing: 0.3px;
+        }
+        
+        .remnant-keep {
+            background: #8B7355;
+            color: #FEFEFE;
+        }
+        
+        .remnant-discard {
+            background: #D5D3D0;
+            color: #6A6A6A;
+        }
+        
+        .info-text {
+            color: #6A6A6A;
+            font-size: 13px;
+            margin-top: 15px;
+            padding: 14px;
+            background: #F9F8F6;
+            border-left: 3px solid #C9BDA8;
+            border-radius: 2px;
+            line-height: 1.6;
+            font-weight: 300;
+        }
+        
+        .scroll-container {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .scroll-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .scroll-container::-webkit-scrollbar-track {
+            background: #F5F3F0;
+            border-radius: 2px;
+        }
+        
+        .scroll-container::-webkit-scrollbar-thumb {
+            background: #D5D3D0;
+            border-radius: 2px;
+        }
+        
+        .scroll-container::-webkit-scrollbar-thumb:hover {
+            background: #C9BDA8;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: #B0ADA8;
+        }
+        
+        .empty-state svg {
+            width: 60px;
+            height: 60px;
+            margin-bottom: 15px;
+            opacity: 0.3;
+        }
+        
+        .empty-state p {
+            font-size: 14px;
+            font-weight: 300;
+        }
+        
+        @media (max-width: 1200px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            .settings-bar {
+                flex-direction: column;
+                gap: 15px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .specs-bar {
+                flex-direction: column;
+                gap: 8px;
+                padding: 12px 16px;
+                border-radius: 6px;
+                margin: 0 10px;
+            }
+            
+            .spec-divider {
+                display: none;
+            }
+            
+            .spec-item {
+                width: 100%;
+                flex-direction: row;
+                justify-content: space-between;
+                padding: 4px 0;
+            }
+            
+            .spec-label {
+                font-size: 12px;
+            }
+            
+            .spec-value {
+                font-size: 16px;
+            }
+            
+            .header {
+                padding: 15px 15px 12px;
+            }
+            
+            .header h1 {
+                font-size: 20px;
+                margin-bottom: 8px;
+            }
+            
+            .settings-bar {
+                padding: 10px 15px;
+                gap: 8px;
+            }
+            
+            .setting-item {
+                width: 100%;
+                justify-content: space-between;
+            }
+            
+            .setting-item label {
+                font-size: 13px;
+                min-width: 70px;
+            }
+            
+            .setting-item select {
+                flex: 1;
+                font-size: 13px;
+                padding: 6px 8px;
+            }
+            
+            .panel {
+                padding: 15px;
+            }
+            
+            .panel h2 {
+                font-size: 15px;
+                margin-bottom: 12px;
+                padding-bottom: 8px;
+            }
+            
+            /* 手機版表單：label 在上，欄位在下 */
+            .input-group {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 6px;
+                margin-bottom: 14px;
+            }
+            
+            .input-group label {
+                min-width: unset;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            
+            .input-group input,
+            .input-group select {
+                width: 100%;
+                font-size: 15px;
+                padding: 10px 12px;
+            }
+            
+            /* 規格尺寸的雙欄位在手機上也堆疊 */
+            .size-input-group {
+                flex-direction: column;
+                gap: 6px;
+            }
+            
+            .size-input-group select,
+            .size-input-group input {
+                width: 100%;
+            }
+            
+            #addRemnantSection {
+                padding: 20px !important;
+            }
+            
+            #addRemnantSection h3 {
+                font-size: 16px !important;
+                margin-bottom: 15px !important;
+            }
+            
+            /* 餘料表單的規格尺寸也要一致 */
+            #addRemnantSection .input-group > div {
+                width: 100%;
+            }
+            
+            .nav-tabs {
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }
+            
+            .nav-tab {
+                padding: 12px 10px;
+                font-size: 14px;
+            }
+            
+            /* 按鈕在手機上更大更好按 */
+            .btn-primary, .btn-danger {
+                padding: 14px !important;
+                font-size: 15px !important;
+            }
+        }
+        
+        /* 浮動計算按鈕 */
+        .floating-calc-btn {
+            position: fixed;
+            right: 30px;
+            bottom: 30px;
+            z-index: 999;
+        }
+        
+        .btn-calc-float {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: linear-gradient(135deg, #8B7355 0%, #A0826D 100%);
+            color: #FFFFFF;
+            border: none;
+            border-radius: 50px;
+            padding: 16px 28px;
+            font-size: 17px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 8px 24px rgba(139, 115, 85, 0.4);
+            transition: all 0.3s ease;
+            letter-spacing: 0.5px;
+        }
+        
+        .btn-calc-float:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 32px rgba(139, 115, 85, 0.5);
+            background: linear-gradient(135deg, #A0826D 0%, #8B7355 100%);
+        }
+        
+        .btn-calc-float:active {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(139, 115, 85, 0.4);
+        }
+        
+        .btn-calc-float svg {
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        /* 桌面版文字 */
+        .calc-text {
+            display: inline;
+        }
+        
+        /* 手機版tooltip */
+        .calc-tooltip {
+            display: none;
+            position: absolute;
+            right: 70px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: #4A4A4A;
+            color: #FFFFFF;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            animation: tooltipFadeIn 0.2s ease-out;
+        }
+        
+        .calc-tooltip::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid #4A4A4A;
+            border-top: 6px solid transparent;
+            border-bottom: 6px solid transparent;
+        }
+        
+        @keyframes tooltipFadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50%) translateX(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(-50%) translateX(0);
+            }
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.6;
+            }
+        }
+        
+        /* 手機版調整 */
+        @media (max-width: 768px) {
+            /* 餘料管理手機版樣式 */
+            #remnantMobileTabs {
+                display: block !important;
+            }
+            
+            #remnantDesktopLayout {
+                display: block !important;
+            }
+            
+            #addRemnantSection,
+            #viewRemnantsSection {
+                margin-bottom: 20px;
+            }
+            
+            /* 預設隱藏查看庫存 */
+            #viewRemnantsSection {
+                display: none;
+            }
+            
+            /* 浮動計算按鈕 */
+            .floating-calc-btn {
+                right: 20px;
+                bottom: 20px;
+            }
+            
+            .btn-calc-float {
+                padding: 0;
+                width: 60px;
+                height: 60px;
+                border-radius: 50%;
+                justify-content: center;
+            }
+            
+            .calc-text {
+                display: none;
+            }
+            
+            .btn-calc-float:hover .calc-tooltip {
+                display: block;
+            }
+        }
+        
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #FEFEFE;
+            border-radius: 2px;
+            padding: 30px;
+            max-width: 700px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        
+        .modal-header {
+            border-bottom: 1px solid #E8E6E3;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .modal-header h3 {
+            color: #4A4A4A;
+            font-weight: 400;
+            font-size: 18px;
+        }
+        
+        .modal-body {
+            margin-bottom: 20px;
+        }
+        
+        .remnant-preview {
+            background: #F9F8F6;
+            border: 1px solid #E8E6E3;
+            border-radius: 2px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .remnant-preview-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #E8E6E3;
+            align-items: center;
+        }
+        
+        .remnant-preview-item:last-child {
+            border-bottom: none;
+        }
+        
+        .remnant-info {
+            flex: 1;
+        }
+        
+        .remnant-checkbox {
+            margin-left: 15px;
+        }
+        
+        .remnant-checkbox input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            border-top: 1px solid #E8E6E3;
+            padding-top: 15px;
+        }
+        
+        .modal-note {
+            background: #FFF9E6;
+            border-left: 3px solid #F4C430;
+            padding: 12px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: #6A6A6A;
+            line-height: 1.5;
+        }
+
+        
+        /* 導航標籤 */
+        .nav-tabs {
+            background: #F5F3F0;
+            border-bottom: 2px solid #E8E6E3;
+            display: flex;
+        }
+        
+        .nav-tab {
+            flex: 1;
+            padding: 15px 20px;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
+            background: #FEFEFE;
+            color: #6A6A6A;
+            font-weight: 500;
+            transition: all 0.2s;
+            border-right: 1px solid #E8E6E3;
+        }
+        
+        .nav-tab:last-child { border-right: none; }
+        
+        .nav-tab.active {
+            background: #8B7355;
+            color: white;
+            font-weight: 600;
+        }
+        
+        .nav-tab:hover:not(.active) {
+            background: #E8E6E3;
+        }
+        
+        .page { display: none; }
+        .page.active { display: block; }
+        
+        /* 滑動提示動畫 */
+        @keyframes slideHint {
+            0%, 100% {
+                transform: translateX(0);
+                opacity: 0.6;
+            }
+            50% {
+                transform: translateX(-8px);
+                opacity: 1;
+            }
+        }
+        
+        /* 地點更改通知動畫 */
+        @keyframes slideDown {
+            from {
+                transform: translateX(-50%) translateY(-20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(-50%) translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes slideUp {
+            from {
+                transform: translateX(-50%) translateY(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(-50%) translateY(-20px);
+                opacity: 0;
+            }
+        }
+        
+        /* 可編輯欄位樣式 */
+        .editable-cell {
+            transition: background 0.2s;
+        }
+        .editable-cell:hover {
+            background: #FEF3C7 !important;
+        }
+        
+        /* 類型標籤顏色 */
+        .type-tag {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            color: white;
+        }
+        .type-tag.type-square {
+            background: linear-gradient(135deg, #3B82F6, #1D4ED8);
+        }
+        .type-tag.type-flat {
+            background: linear-gradient(135deg, #10B981, #059669);
+        }
+        .type-tag.type-round {
+            background: linear-gradient(135deg, #F59E0B, #D97706);
+        }
+        .type-tag.type-angle {
+            background: linear-gradient(135deg, #8B5CF6, #6D28D9);
+        }
+        .type-tag.type-rod {
+            background: linear-gradient(135deg, #EC4899, #BE185D);
+        }
+        .type-tag.type-channel {
+            background: linear-gradient(135deg, #6B7280, #374151);
+        }
+    </style>
+    <script>
+        // 頁面切換函數
+        function switchPage(page) {
+            var tabs = document.querySelectorAll('.nav-tab');
+            var pages = document.querySelectorAll('.page');
+            for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+            for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+            if (page === 'main') {
+                tabs[0].classList.add('active');
+                document.getElementById('mainPage').classList.add('active');
+            } else if (page === 'remnant') {
+                tabs[1].classList.add('active');
+                document.getElementById('remnantPage').classList.add('active');
+            }
+        }
+        
+        // 餘料管理手機版分頁切換
+        function switchRemnantTab(tab) {
+            var tabAdd = document.getElementById('tabAddRemnant');
+            var tabView = document.getElementById('tabViewRemnants');
+            var addSection = document.getElementById('addRemnantSection');
+            var viewSection = document.getElementById('viewRemnantsSection');
+            
+            // 重置按鈕樣式
+            tabAdd.style.background = '#E8E6E3';
+            tabAdd.style.color = '#6A6A6A';
+            tabAdd.style.fontWeight = 'normal';
+            tabView.style.background = '#E8E6E3';
+            tabView.style.color = '#6A6A6A';
+            tabView.style.fontWeight = 'normal';
+            
+            if (tab === 'add') {
+                // 顯示新增餘料
+                tabAdd.style.background = '#8B7355';
+                tabAdd.style.color = 'white';
+                tabAdd.style.fontWeight = '600';
+                
+                // 手機版切換顯示
+                if (window.innerWidth <= 768) {
+                    addSection.style.display = 'block';
+                    viewSection.style.display = 'none';
+                }
+            } else if (tab === 'view') {
+                // 顯示庫存列表
+                tabView.style.background = '#8B7355';
+                tabView.style.color = 'white';
+                tabView.style.fontWeight = '600';
+                
+                // 手機版切換顯示
+                if (window.innerWidth <= 768) {
+                    addSection.style.display = 'none';
+                    viewSection.style.display = 'block';
+                }
+            }
+        }
+        
+        // 批次輸入解析函數聲明（實際定義在後面）
+        // v1.2: 已移除批次輸入函數
+        var readFileAsText, parseStepGeometry, parseStepFileName, groupStepPipes;
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>管材切割優化系統 <span style="font-size: 0.6em; color: #D4AF37;">v1.2.6 手機版</span></h1>
+            <div id="syncStatus" style="font-size: 11px; margin-top: 3px; color: #10B981;">🟢 雲端連線中...</div>
+            <div style="text-align: center; color: #6A6A6A; font-size: 13px; margin-top: 5px;">
+                3D幾何智能解析 | 尺寸對比檢查 | 自動優化切割
+            </div>
+            <div class="specs-bar">
+                <div class="spec-item">
+                    <span class="spec-label">原料長度</span>
+                    <span class="spec-value">6000mm</span>
+                </div>
+                <div class="spec-divider">|</div>
+                <div class="spec-item">
+                    <span class="spec-label">切割損耗</span>
+                    <span class="spec-value" id="kerfDisplay">1mm</span>
+                </div>
+                <div class="spec-divider">|</div>
+                <div class="spec-item">
+                    <span class="spec-label">最小餘料</span>
+                    <span class="spec-value">100mm</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 導航標籤 -->
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="switchPage('main')">📐 切割計算</button>
+            <button class="nav-tab" onclick="switchPage('remnant')">📦 餘料管理</button>
+        </div>
+        
+        <div class="settings-bar">
+            <div class="setting-item">
+                <label>切割方式:</label>
+                <select id="cuttingMethod" onchange="updateKerf()">
+                    <option value="1">鋸片切割 (1mm)</option>
+                    <option value="0.2">雷射切割 (0.2mm)</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>優化目標:</label>
+                <select id="optimizationGoal">
+                    <option value="utilization">材料利用率最高</option>
+                    <option value="new-stock">優先使用新料</option>
+                    <option value="remnant">優先使用餘料</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>管材類型:</label>
+                <select id="pipeType">
+                    <option value="all">全部類型</option>
+                    <option value="square">方管</option>
+                    <option value="round">圓形管</option>
+                    <option value="flat">扁管</option>
+                    <option value="angle">角鐵</option>
+                    <option value="channel">槽鋼</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="page active" id="mainPage">
+        <div class="main-content">
+            <!-- 左側：訂單需求 -->
+            <div class="panel">
+                <h2>訂單需求</h2>
+                
+                <div class="input-group">
+                    <label>材質:</label>
+                    <select id="demandMaterial">
+                        <option value="01">01 (SS41-碳鋼)</option>
+                        <option value="02">02 (SUS-不鏽鋼)</option>
+                        <option value="03">03 (PG-鍍鋅)</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>管材類型:</label>
+                    <select id="demandType" onchange="updateSizeOptions('demand')">
+                        <option value="square">方管</option>
+                        <option value="round">圓形管</option>
+                        <option value="rod">圓棒 (實心)</option>
+                        <option value="flat">扁管</option>
+                        <option value="angle">角鐵</option>
+                        <option value="channel">槽鋼</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>規格尺寸:</label>
+                    <div class="size-input-group">
+                        <select id="demandSizePreset" onchange="handleSizePresetChange('demand')" style="flex: 1;">
+                                    <option value="">-- 常用規格 --</option>
+                                    <option value="38×38">38×38</option>
+                                    <option value="40×40">40×40</option>
+                                    <option value="50×50">50×50</option>
+                                    <option value="60×60">60×60</option>
+                                    <option value="75×75">75×75</option>
+                                    <option value="80×80">80×80</option>
+                                    <option value="100×100">100×100</option>
+                                    <option value="120×120">120×120</option>
+                                    <option value="150×150">150×150</option>
+                                </select>
+                        <input type="text" id="demandSizeCustom" placeholder="或輸入特殊規格" style="flex: 1; min-width: 0;">
+                    </div>
+                </div>
+                
+                <div class="input-group" id="demandThicknessGroup">
+                    <label>板厚 (mm):</label>
+                    <select id="demandThickness">
+                        <option value="">-- 選擇板厚 --</option>
+                        <option value="1.6">1.6mm</option>
+                        <option value="2">2mm</option>
+                        <option value="3">3mm</option>
+                        <option value="4">4mm</option>
+                        <option value="5">5mm</option>
+                        <option value="6">6mm</option>
+                        <option value="9">9mm</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label>料號:</label>
+                    <input type="text" id="demandPartNo" placeholder="選填，例如: A001" maxlength="50">
+                </div>
+                
+                <div class="input-group">
+                    <label>長度 (mm):</label>
+                    <input type="number" id="demandLength" value="2000" min="50" max="5980" step="0.1">
+                </div>
+                
+                <div class="input-group">
+                    <label>數量 (支):</label>
+                    <input type="number" id="demandQty" value="1" min="1" max="1000">
+                </div>
+                
+                <button class="btn-primary" onclick="addDemand()" style="width: 100%;">新增需求</button>
+                
+                <!-- 批次輸入區域 -->
+                <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #E8E6E3;">
+                    <h3 style="color: #8B7355; font-size: 15px; margin-bottom: 12px; display: flex; align-items: center;">
+                        <span style="margin-right: 8px;">📋</span>
+                        批次輸入管材明細
+                    </h3>
+                    
+                    <div class="input-group">
+                        <label>材質:</label>
+                        <select id="batchMaterial">
+                            <option value="01">01 (SS41-碳鋼)</option>
+                            <option value="02">02 (SUS-不鏽鋼)</option>
+                            <option value="03">03 (PG-鍍鋅)</option>
+                        </select>
+                    </div>
+                    
+                    <!-- v1.2: 已移除批次輸入功能（STEP/Excel/DXF上傳） -->
+                    
+                </div>
+                </div>
+                
+                <!-- 滑動提示 -->
+                <div style="display: flex; justify-content: flex-end; margin-top: 10px; margin-bottom: 5px;">
+                    <div style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%); border-radius: 15px; font-size: 11px; color: #92400E; font-weight: 600; border: 1px solid #F59E0B;">
+                        <span>👉 表格可左右滑動</span>
+                    </div>
+                </div>
+                
+                <div style="overflow-x: auto; -webkit-overflow-scrolling: touch; max-height: 250px; overflow-y: auto; position: relative;">
+                    <!-- 右側滑動提示箭頭 -->
+                    <div id="demandScrollHint" style="position: absolute; right: 0; top: 0; bottom: 0; width: 30px; background: linear-gradient(to right, transparent, rgba(254, 243, 199, 0.8)); pointer-events: none; display: flex; align-items: center; justify-content: center; z-index: 10;">
+                        <span style="font-size: 20px; animation: slideHint 1.5s ease-in-out infinite;">👉</span>
+                    </div>
+                    
+                    <table id="demandTable" style="min-width: 700px; font-size: 13px; width: 100%;">
+                        <thead>
+                            <tr>
+                                <th style="min-width: 50px; white-space: nowrap;">材質</th>
+                                <th style="min-width: 60px; white-space: nowrap;">類型</th>
+                                <th style="min-width: 90px; white-space: nowrap;">規格</th>
+                                <th style="min-width: 80px; white-space: nowrap;">料號</th>
+                                <th style="min-width: 70px; white-space: nowrap;">長度</th>
+                                <th style="min-width: 50px; white-space: nowrap;">數量</th>
+                                <th style="min-width: 80px; white-space: nowrap;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="demandBody">
+                        </tbody>
+                    </table>
+                </div>
+                
+                <button class="btn-warning" onclick="clearDemands()" style="width: 100%; margin-top: 10px;">清空需求</button>
+            </div>
+            
+            <!-- 右側：切割方案 -->
+            <div class="panel">
+                <h2>切割方案</h2>
+                
+                <div id="statsContainer"></div>
+                
+                <div class="scroll-container" id="resultContainer">
+                    <div class="empty-state">
+                        <svg fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"></path>
+                            <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"></path>
+                        </svg>
+                        <p>請先新增需求並點擊「開始計算」</p>
+                    </div>
+                </div>
+                
+                <button class="btn-info" onclick="saveResult()" id="saveBtn" style="display: none;">
+                    保存方案並更新餘料
+                </button>
+            </div>
+        </div>
+        </div><!-- 關閉 mainPage -->
+        
+        <!-- 餘料管理頁面 -->
+        <div class="page" id="remnantPage" style="padding: 30px; background: #F5F3F0;">
+            <div style="max-width: 1400px; margin: 0 auto;">
+                <h2 style="color: #4A4A4A; margin-bottom: 30px; font-size: 28px; font-weight: 600;">📦 餘料庫存管理</h2>
+                
+                <!-- 手機版標籤切換 -->
+                <div id="remnantMobileTabs" style="display: none; margin-bottom: 20px;">
+                    <div style="display: flex; gap: 10px; background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <button id="tabAddRemnant" onclick="switchRemnantTab('add')" 
+                                style="flex: 1; padding: 12px; border: none; background: #8B7355; color: white; cursor: pointer; border-radius: 5px; font-weight: 600; font-size: 14px;">
+                            ➕ 新增餘料
+                        </button>
+                        <button id="tabViewRemnants" onclick="switchRemnantTab('view')" 
+                                style="flex: 1; padding: 12px; border: none; background: #E8E6E3; color: #6A6A6A; cursor: pointer; border-radius: 5px; font-size: 14px;">
+                            📋 查看庫存
+                        </button>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 400px 1fr; gap: 30px;" id="remnantDesktopLayout">
+                    <!-- 左側：新增餘料 -->
+                    <div id="addRemnantSection" style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <h3 style="color: #8B7355; margin-bottom: 20px; font-size: 18px;">新增餘料</h3>
+                        
+                        <div class="input-group">
+                            <label>材質:</label>
+                            <select id="remnantMaterial">
+                                <option value="01">01 (SS41-碳鋼)</option>
+                                <option value="02">02 (SUS-不鏽鋼)</option>
+                                <option value="03">03 (PG-鍍鋅)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label>管材類型:</label>
+                            <select id="remnantType" onchange="updateSizeOptions('remnant')">
+                                <option value="square">方管</option>
+                                <option value="round">圓形管</option>
+                                <option value="rod">圓棒 (實心)</option>
+                                <option value="flat">扁管</option>
+                                <option value="angle">角鐵</option>
+                                <option value="channel">槽鋼</option>
+                            </select>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label>規格尺寸:</label>
+                            <div class="size-input-group">
+                                <select id="remnantSizePreset" onchange="handleSizePresetChange('remnant')">
+                                    <option value="">-- 常用規格 --</option>
+                                    <option value="38×38">38×38</option>
+                                    <option value="40×40">40×40</option>
+                                    <option value="50×50">50×50</option>
+                                    <option value="60×60">60×60</option>
+                                    <option value="75×75">75×75</option>
+                                    <option value="80×80">80×80</option>
+                                    <option value="100×100">100×100</option>
+                                    <option value="120×120">120×120</option>
+                                    <option value="150×150">150×150</option>
+                                </select>
+                                <input type="text" id="remnantSizeCustom" placeholder="或輸入特殊規格">
+                            </div>
+                        </div>
+                        
+                        <div class="input-group" id="remnantThicknessGroup">
+                            <label>板厚 (mm):</label>
+                            <select id="remnantThickness">
+                                <option value="">-- 選擇板厚 --</option>
+                                <option value="1.6">1.6mm</option>
+                                <option value="2">2mm</option>
+                                <option value="3">3mm</option>
+                                <option value="4">4mm</option>
+                                <option value="5">5mm</option>
+                                <option value="6">6mm</option>
+                                <option value="9">9mm</option>
+                            </select>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label>存放地點:</label>
+                            <select id="remnantLocation">
+                                <option value="貨櫃">貨櫃</option>
+                                <option value="折床上方">折床上方</option>
+                                <option value="鋸床管料區">鋸床管料區</option>
+                            </select>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label>長度 (mm):</label>
+                            <input type="number" id="remnantLength" value="1000" min="50" max="5980">
+                        </div>
+                        
+                        <div class="input-group">
+                            <label>數量 (支):</label>
+                            <input type="number" id="remnantQty" value="1" min="1" max="100">
+                        </div>
+                        
+                        <button class="btn-primary" onclick="addRemnant()" style="width: 100%; padding: 15px;">新增餘料</button>
+                        
+                        <button class="btn-danger" onclick="clearRemnants()" style="width: 100%; margin-top: 15px;">
+                            🗑️ 清空所有餘料
+                        </button>
+                        
+                        <div class="info-text" style="margin-top: 20px;">
+                            <strong>💡 說明</strong><br>
+                            • 最小保留長度: 100mm<br>
+                            • 短於此長度的餘料將被丟棄<br>
+                            • 可依管材類型和規格分類管理
+                        </div>
+                    </div>
+                    
+                    <!-- 右側：餘料列表 -->
+                    <div id="viewRemnantsSection" style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h3 style="color: #8B7355; font-size: 18px; margin: 0;">餘料庫存列表</h3>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button onclick="showBackupManager()" style="padding: 6px 12px; background: #F3F4F6; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 12px; color: #374151; cursor: pointer;" title="備份管理">
+                                    📦 備份
+                                </button>
+                                <div style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%); border-radius: 20px; font-size: 12px; color: #92400E; font-weight: 600; border: 1px solid #F59E0B;">
+                                    <span>👉 往右滑查看更多</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 搜尋和排序 -->
+                        <div style="margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <input type="text" id="remnantSearch" placeholder="🔍 搜尋編號/規格/地點..." 
+                                   oninput="renderRemnants()"
+                                   style="flex: 1; min-width: 150px; padding: 8px 12px; border: 1px solid #E8E6E3; border-radius: 4px; font-size: 14px;">
+                            <select id="remnantSortSelect" onchange="handleSortChange()" 
+                                    style="padding: 8px; border: 1px solid #E8E6E3; border-radius: 4px; font-size: 13px;">
+                                <option value="">排序方式</option>
+                                <option value="remnantCode-asc">編號 ↑</option>
+                                <option value="remnantCode-desc">編號 ↓</option>
+                                <option value="length-asc">長度 ↑</option>
+                                <option value="length-desc">長度 ↓</option>
+                                <option value="type-asc">類型 ↑</option>
+                                <option value="size-asc">規格 ↑</option>
+                                <option value="location-asc">地點 ↑</option>
+                            </select>
+                        </div>
+                        
+                        <!-- 卡片式餘料列表 -->
+                        <div id="remnantCards" style="max-height: 500px; overflow-y: auto;">
+                            <!-- 卡片會由 JS 動態生成 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    
+    <!-- 浮動計算按鈕 -->
+    <div class="floating-calc-btn">
+        <button class="btn-calc-float" onclick="calculate()" title="開始計算">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <!-- 計算機外框 -->
+                <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+                <!-- 螢幕 -->
+                <rect x="6" y="5" width="12" height="4" rx="1"></rect>
+                <!-- 按鈕網格 -->
+                <line x1="7" y1="12" x2="7" y2="12"></line>
+                <line x1="12" y1="12" x2="12" y2="12"></line>
+                <line x1="17" y1="12" x2="17" y2="12"></line>
+                <line x1="7" y1="15" x2="7" y2="15"></line>
+                <line x1="12" y1="15" x2="12" y2="15"></line>
+                <line x1="17" y1="15" x2="17" y2="15"></line>
+                <line x1="7" y1="18" x2="7" y2="18"></line>
+                <line x1="12" y1="18" x2="12" y2="18"></line>
+                <line x1="17" y1="18" x2="17" y2="18"></line>
+            </svg>
+            <span class="calc-text">開始計算</span>
+            <span class="calc-tooltip">開始計算</span>
+        </button>
+    </div>
+    
+    <!-- 餘料確認對話框 -->
+    <div id="remnantModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>確認保存餘料</h3>
+            </div>
+            <div class="modal-body">
+                <div class="modal-note">
+                    請確認以下餘料是否要加入庫存。已選擇的餘料將自動進入餘料管理。
+                </div>
+                <div class="remnant-preview" id="remnantPreviewList">
+                </div>
+                <div style="margin-top: 15px; color: #6A6A6A; font-size: 13px;">
+                    <strong>操作說明：</strong><br>
+                    • 勾選要保留的餘料<br>
+                    • 點擊「全選」可快速選擇所有餘料<br>
+                    • 只有勾選的餘料會加入庫存
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-warning" onclick="closeRemnantModal()">取消</button>
+                <button class="btn-primary" onclick="selectAllRemnants()">全選</button>
+                <button class="btn-success" onclick="confirmSaveRemnants()">確認保存</button>
+            </div>
+        </div>
+    </div>
+
+    </div>
+
+    <script>
+        // 系統參數
+        const STOCK_LENGTH = 5980; // 6000-20mm安全餘量
+        let KERF = 1; // 預設為鋸片切割
+        const MIN_REMNANT = 100; // 100mm最小餘料
+        
+        // 更新切縫值
+        function updateKerf() {
+            KERF = parseFloat(document.getElementById('cuttingMethod').value);
+            document.getElementById('kerfDisplay').textContent = `${KERF}mm`;
+            console.log(`切縫已更新為: ${KERF}mm`);
+        }
+        
+        // 管材類型中文對照
+        const PIPE_TYPES = {
+            'square': '方管',
+            'round': '圓形管',
+            'rod': '圓棒',
+            'flat': '扁管',
+            'angle': '角鐵',
+            'channel': '槽鋼'
+        };
+        
+        // 不需要板厚的類型（實心材質）
+        const NO_THICKNESS_TYPES = ['rod'];
+        
+        // 市面常用規格 (mm)
+        const COMMON_SIZES = {
+            'square': [ // 方管 (邊長)
+                '38×38', '40×40', '50×50', '60×60', '75×75', '80×80',
+                '100×100', '120×120', '150×150'
+            ],
+            'round': [ // 圓形管 (外徑)
+                'Ø22', 'Ø28', 'Ø34', 'Ø50', 'Ø60', 'Ø200'
+            ],
+            'rod': [ // 圓棒 (實心，直徑)
+                'Ø25'
+            ],
+            'flat': [ // 扁管 (寬×高)
+                '20×10', '30×15', '40×20', '50×25', '60×30',
+                '80×40', '100×50', '120×60', '150×75', '200×100'
+            ],
+            'angle': [ // 角鐵 (邊長×邊長)
+                'L20×20', 'L25×25', 'L30×30', 'L40×40', 'L50×50',
+                'L60×60', 'L65×65', 'L75×75', 'L90×90', 'L100×100',
+                'L125×125', 'L150×150', 'L200×200'
+            ],
+            'channel': [ // 槽鋼 (高度×寬度)
+                '[50×37', '[65×42', '[75×45', '[80×50', '[100×50',
+                '[120×53', '[140×58', '[160×63', '[180×68', '[200×73',
+                '[250×78', '[300×85', '[320×88', '[400×100'
+            ]
+        };
+        
+        // 數據存儲
+        let demands = [];
+        let remnants = [];
+        let currentResult = null;
+        
+        // 排序狀態
+        let remnantSortField = null;
+        let remnantSortOrder = 'asc';
+        
+        // 初始化規格選項
+        function updateSizeOptions(prefix) {
+            const typeSelect = document.getElementById(`${prefix}Type`);
+            const sizeSelect = document.getElementById(`${prefix}SizePreset`);
+            const type = typeSelect.value;
+            
+            sizeSelect.innerHTML = '<option value="">-- 常用規格 --</option>';
+            
+            if (COMMON_SIZES[type]) {
+                COMMON_SIZES[type].forEach(size => {
+                    const option = document.createElement('option');
+                    option.value = size;
+                    option.textContent = size;
+                    sizeSelect.appendChild(option);
+                });
+            }
+            
+            // 控制板厚欄位顯示（圓棒不需要板厚）
+            const thicknessGroup = document.getElementById(`${prefix}ThicknessGroup`);
+            if (thicknessGroup) {
+                if (NO_THICKNESS_TYPES.includes(type)) {
+                    thicknessGroup.style.display = 'none';
+                } else {
+                    thicknessGroup.style.display = 'block';
+                }
+            }
+        }
+        
+        // 處理規格選擇變更
+        function handleSizePresetChange(prefix) {
+            const presetSelect = document.getElementById(`${prefix}SizePreset`);
+            const customInput = document.getElementById(`${prefix}SizeCustom`);
+            
+            if (presetSelect.value) {
+                customInput.value = '';
+                customInput.placeholder = '已選常用規格';
+            } else {
+                customInput.placeholder = '或輸入特殊規格';
+            }
+        }
+        
+        // 獲取當前規格
+        function getCurrentSize(prefix) {
+            const presetSelect = document.getElementById(`${prefix}SizePreset`);
+            const customInput = document.getElementById(`${prefix}SizeCustom`);
+            
+            if (presetSelect.value) {
+                return presetSelect.value;
+            } else if (customInput.value.trim()) {
+                return customInput.value.trim();
+            }
+            return '';
+        }
+        
+        // 載入本地存儲（先載入 localStorage，再監聽 Firebase）
+        function loadFromStorage() {
+            // 先從 localStorage 快速載入
+            const savedRemnants = localStorage.getItem('remnants_v5');
+            if (savedRemnants) {
+                remnants = JSON.parse(savedRemnants);
+                renderRemnants();
+            } else {
+                // 首次使用，載入預設庫存資料
+                remnants = getDefaultRemnants();
+                renderRemnants();
+                saveToStorage();
+            }
+            const savedDemands = localStorage.getItem('demands_v5');
+            if (savedDemands) {
+                demands = JSON.parse(savedDemands);
+                renderDemands();
+            }
+            
+            // 啟動 Firebase 即時監聽
+            setupFirebaseListeners();
+        }
+        
+        // 預設庫存資料（根據實際庫存更新）
+        function getDefaultRemnants() {
+            return [
+                { id: 1, material: '01', remnantCode: '01001', type: 'square', size: '38×38', thickness: 1.6, location: '鋸床管料區', length: 6000, qty: 9 },
+                { id: 2, material: '01', remnantCode: '01002', type: 'angle', size: 'L30×30', thickness: 3, location: '鋸床管料區', length: 6000, qty: 6 },
+                { id: 3, material: '01', remnantCode: '01003', type: 'round', size: 'Ø22', thickness: 1.6, location: '鋸床管料區', length: 6000, qty: 9 },
+                { id: 4, material: '01', remnantCode: '01004', type: 'round', size: 'Ø22', thickness: 1.6, location: '鋸床管料區', length: 1455, qty: 1 },
+                { id: 5, material: '01', remnantCode: '01005', type: 'round', size: 'Ø22', thickness: 1.6, location: '鋸床管料區', length: 2930, qty: 1 },
+                { id: 6, material: '01', remnantCode: '01006', type: 'round', size: 'Ø22', thickness: 1.6, location: '鋸床管料區', length: 1170, qty: 1 },
+                { id: 7, material: '01', remnantCode: '01007', type: 'square', size: '100×100', thickness: 4, location: '鋸床管料區', length: 2135, qty: 1 },
+                { id: 8, material: '01', remnantCode: '01008', type: 'square', size: '75×75', thickness: 3, location: '鋸床管料區', length: 4045, qty: 1 },
+                { id: 9, material: '01', remnantCode: '01009', type: 'square', size: '50×50', thickness: 3, location: '鋸床管料區', length: 4940, qty: 1 },
+                { id: 10, material: '01', remnantCode: '01010', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 6000, qty: 4 },
+                { id: 11, material: '01', remnantCode: '01011', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 1810, qty: 1 },
+                { id: 12, material: '01', remnantCode: '01012', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 1710, qty: 1 },
+                { id: 13, material: '01', remnantCode: '01013', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 3005, qty: 1 },
+                { id: 14, material: '01', remnantCode: '01014', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 2685, qty: 1 },
+                { id: 15, material: '01', remnantCode: '01015', type: 'rod', size: 'Ø25', thickness: 0, location: '鋸床管料區', length: 2700, qty: 1 },
+                { id: 16, material: '01', remnantCode: '01016', type: 'flat', size: '100×50', thickness: 2.5, location: '鋸床管料區', length: 3050, qty: 1 },
+                { id: 17, material: '01', remnantCode: '01017', type: 'round', size: 'Ø50', thickness: 1.6, location: '鋸床管料區', length: 1590, qty: 1 },
+                { id: 18, material: '01', remnantCode: '01018', type: 'square', size: '100×100', thickness: 6, location: '鋸床管料區', length: 3700, qty: 1 },
+                { id: 19, material: '01', remnantCode: '01019', type: 'flat', size: '50×25', thickness: 2.0, location: '鋸床管料區', length: 6000, qty: 1 },
+                { id: 20, material: '01', remnantCode: '01020', type: 'square', size: '60×60', thickness: 3, location: '鋸床管料區', length: 2330, qty: 1 },
+                { id: 21, material: '01', remnantCode: '01021', type: 'square', size: '100×100', thickness: 3, location: '鋸床管料區', length: 6000, qty: 1 },
+                { id: 22, material: '01', remnantCode: '01022', type: 'round', size: 'Ø60', thickness: 1.6, location: '鋸床管料區', length: 3135, qty: 1 },
+                { id: 23, material: '01', remnantCode: '01023', type: 'flat', size: '60×30', thickness: 2.0, location: '鋸床管料區', length: 6000, qty: 1 },
+                { id: 24, material: '01', remnantCode: '01024', type: 'flat', size: '60×30', thickness: 2.0, location: '鋸床管料區', length: 3050, qty: 1 }
+            ];
+        }
+        
+        // 保存到本地存儲 + Firebase
+        function saveToStorage() {
+            // 保存到 localStorage（離線備份）
+            localStorage.setItem('remnants_v5', JSON.stringify(remnants));
+            localStorage.setItem('demands_v5', JSON.stringify(demands));
+            
+            var syncIndicator = document.getElementById('syncStatus');
+            
+            // 檢查 Firebase 連線狀態
+            if (!db) {
+                console.warn('Firebase 未初始化');
+                if (syncIndicator) {
+                    syncIndicator.innerHTML = '📱 離線模式 (已存本機)';
+                    syncIndicator.style.color = '#6B7280';
+                }
+                return;
+            }
+            
+            // 重新檢查連線狀態
+            db.ref('.info/connected').once('value').then(function(snap) {
+                if (snap.val() !== true) {
+                    console.warn('Firebase 連線已斷開');
+                    firebaseConnected = false;
+                    if (syncIndicator) {
+                        syncIndicator.innerHTML = '📱 離線模式 (已存本機)';
+                        syncIndicator.style.color = '#6B7280';
+                    }
+                    return;
+                }
+                
+                firebaseConnected = true;
+                
+                if (syncIndicator) {
+                    syncIndicator.innerHTML = '🔄 同步中...';
+                    syncIndicator.style.color = '#F59E0B';
+                }
+                
+                // 用 "EMPTY" 標記代替空陣列，避免 Firebase 刪除 null 值
+                var dataToSync = {
+                    remnants: remnants.length > 0 ? remnants : 'EMPTY',
+                    demands: demands.length > 0 ? demands : 'EMPTY',
+                    lastUpdated: firebase.database.ServerValue.TIMESTAMP,
+                    updatedBy: 'mobile'
+                };
+                
+                isSyncing = true;
+                
+                // 同步函數（帶重試）
+                var retryCount = 0;
+                var maxRetries = 3;
+                
+                function attemptSync() {
+                    db.ref('pipeData').set(dataToSync).then(function() {
+                        setTimeout(function() { isSyncing = false; }, 500);
+                        if (syncIndicator) {
+                            syncIndicator.innerHTML = '🟢 已同步';
+                            syncIndicator.style.color = '#10B981';
+                        }
+                        console.log('✅ Firebase 同步成功');
+                        
+                        // 自動備份到 Firebase（每次同步成功後）
+                        autoBackupToFirebase();
+                        
+                    }).catch(function(err) {
+                        retryCount++;
+                        var errMsg = err.message || err.code || String(err);
+                        console.error('❌ Firebase 同步失敗 (嘗試 ' + retryCount + '/' + maxRetries + '):', errMsg);
+                        
+                        // 檢查是否為權限問題
+                        if (errMsg.indexOf('PERMISSION_DENIED') !== -1) {
+                            isSyncing = false;
+                            if (syncIndicator) {
+                                syncIndicator.innerHTML = '🔒 無寫入權限';
+                                syncIndicator.style.color = '#EF4444';
+                            }
+                            alert('Firebase 寫入權限被拒絕！\\n請檢查 Firebase 規則設定。\\n\\n資料已存到本機，不會遺失。');
+                            return;
+                        }
+                        
+                        if (retryCount < maxRetries) {
+                            if (syncIndicator) {
+                                syncIndicator.innerHTML = '🔄 重試中(' + retryCount + ')...';
+                            }
+                            setTimeout(attemptSync, 1500 * retryCount);
+                        } else {
+                            isSyncing = false;
+                            if (syncIndicator) {
+                                syncIndicator.innerHTML = '⚠️ 同步失敗 (點擊重試)';
+                                syncIndicator.style.color = '#EF4444';
+                                syncIndicator.style.cursor = 'pointer';
+                                syncIndicator.onclick = function() {
+                                    saveToStorage(); // 重新觸發整個同步流程
+                                };
+                            }
+                        }
+                    });
+                }
+                
+                attemptSync();
+            }).catch(function(err) {
+                console.error('Firebase 連線檢查失敗:', err);
+                if (syncIndicator) {
+                    syncIndicator.innerHTML = '📱 離線模式 (已存本機)';
+                    syncIndicator.style.color = '#6B7280';
+                }
+            });
+        }
+        
+        // ========== 自動備份功能 ==========
+        var lastBackupTime = localStorage.getItem('lastBackupTime') || '';
+        
+        // 自動備份到 Firebase（每 12 小時備份一次）
+        function autoBackupToFirebase() {
+            if (!db || !firebaseConnected) return;
+            
+            var now = new Date();
+            var currentHalf = now.toISOString().split('T')[0] + (now.getHours() < 12 ? '-AM' : '-PM'); // YYYY-MM-DD-AM 或 YYYY-MM-DD-PM
+            
+            // 如果這個半天已經備份過，跳過
+            if (lastBackupTime === currentHalf) {
+                console.log('📦 這個時段已備份過，跳過');
+                return;
+            }
+            
+            // 如果餘料是空的，不備份（避免備份空資料）
+            if (remnants.length === 0) {
+                console.log('📦 餘料為空，跳過備份');
+                return;
+            }
+            
+            var backupKey = currentHalf; // 例如：2026-03-17-AM 或 2026-03-17-PM
+            var backupData = {
+                remnants: remnants,
+                demands: demands,
+                backupTime: now.toISOString(),
+                remnantCount: remnants.length,
+                period: now.getHours() < 12 ? '上午' : '下午'
+            };
+            
+            // 備份到 Firebase 的 backups/YYYY-MM-DD-AM 或 PM
+            db.ref('backups/' + backupKey).set(backupData).then(function() {
+                console.log('📦 自動備份成功：' + backupKey);
+                lastBackupTime = currentHalf;
+                localStorage.setItem('lastBackupTime', currentHalf);
+                
+                // 清理超過 7 天的備份
+                cleanOldBackups();
+            }).catch(function(err) {
+                console.error('📦 自動備份失敗：', err);
+            });
+        }
+        
+        // 清理超過 7 天的備份（保留 14 個備份）
+        function cleanOldBackups() {
+            if (!db) return;
+            
+            var cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - 7);
+            var cutoffStr = cutoffDate.toISOString().split('T')[0];
+            
+            db.ref('backups').once('value').then(function(snapshot) {
+                var backups = snapshot.val();
+                if (!backups) return;
+                
+                Object.keys(backups).forEach(function(dateKey) {
+                    if (dateKey < cutoffStr) {
+                        db.ref('backups/' + dateKey).remove();
+                        console.log('🗑️ 刪除舊備份：' + dateKey);
+                    }
+                });
+            });
+        }
+        
+        // 取得可用的備份列表
+        function getBackupList() {
+            return new Promise(function(resolve) {
+                if (!db) {
+                    resolve([]);
+                    return;
+                }
+                
+                db.ref('backups').once('value').then(function(snapshot) {
+                    var backups = snapshot.val();
+                    if (!backups) {
+                        resolve([]);
+                        return;
+                    }
+                    
+                    var list = Object.keys(backups).map(function(dateKey) {
+                        return {
+                            date: dateKey,
+                            remnantCount: backups[dateKey].remnantCount || 0,
+                            backupTime: backups[dateKey].backupTime
+                        };
+                    }).sort(function(a, b) {
+                        return b.date.localeCompare(a.date); // 最新的在前
+                    });
+                    
+                    resolve(list);
+                }).catch(function() {
+                    resolve([]);
+                });
+            });
+        }
+        
+        // 從備份還原
+        function restoreFromBackup(dateKey) {
+            if (!db) {
+                alert('Firebase 未連線，無法還原');
+                return;
+            }
+            
+            db.ref('backups/' + dateKey).once('value').then(function(snapshot) {
+                var backup = snapshot.val();
+                if (!backup) {
+                    alert('找不到該備份');
+                    return;
+                }
+                
+                if (confirm('確定要還原到 ' + dateKey + ' 的備份嗎？\\n\\n將還原 ' + backup.remnantCount + ' 筆餘料資料。\\n\\n⚠️ 目前的資料會被覆蓋！')) {
+                    remnants = backup.remnants || [];
+                    demands = backup.demands || [];
+                    
+                    saveToStorage();
+                    renderRemnants();
+                    renderDemands();
+                    
+                    alert('✅ 已還原到 ' + dateKey + ' 的備份\\n\\n共 ' + remnants.length + ' 筆餘料');
+                }
+            }).catch(function(err) {
+                alert('還原失敗：' + err.message);
+            });
+        }
+        
+        // 顯示備份管理彈窗
+        function showBackupManager() {
+            getBackupList().then(function(list) {
+                var modal = document.createElement('div');
+                modal.id = 'backupModal';
+                modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+                
+                var content = '<div style="background:white;padding:20px;border-radius:12px;max-width:90%;max-height:80%;overflow-y:auto;">';
+                content += '<h3 style="margin:0 0 15px 0;color:#8B7355;">📦 備份管理</h3>';
+                
+                if (list.length === 0) {
+                    content += '<p style="color:#666;">目前沒有備份。</p>';
+                    content += '<p style="color:#999;font-size:12px;">系統會每半天自動備份一次</p>';
+                } else {
+                    content += '<p style="color:#666;font-size:13px;margin-bottom:15px;">點擊「還原」可恢復到該時段的資料</p>';
+                    content += '<div style="border:1px solid #E5E5E5;border-radius:8px;overflow:hidden;">';
+                    
+                    list.forEach(function(backup, index) {
+                        var bgColor = index % 2 === 0 ? '#FAFAFA' : '#FFFFFF';
+                        // 解析顯示名稱：2026-03-17-AM → 2026-03-17 上午
+                        var displayDate = backup.date;
+                        if (backup.date.endsWith('-AM')) {
+                            displayDate = backup.date.replace('-AM', ' 上午');
+                        } else if (backup.date.endsWith('-PM')) {
+                            displayDate = backup.date.replace('-PM', ' 下午');
+                        }
+                        content += '<div style="padding:12px 15px;background:' + bgColor + ';border-bottom:1px solid #EEE;display:flex;justify-content:space-between;align-items:center;">';
+                        content += '<div>';
+                        content += '<div style="font-weight:600;color:#333;">' + displayDate + '</div>';
+                        content += '<div style="font-size:12px;color:#888;">' + backup.remnantCount + ' 筆餘料</div>';
+                        content += '</div>';
+                        content += '<button onclick="restoreFromBackup(\'' + backup.date + '\');closeBackupModal();" style="background:#8B7355;color:white;border:none;padding:8px 15px;border-radius:6px;cursor:pointer;">還原</button>';
+                        content += '</div>';
+                    });
+                    
+                    content += '</div>';
+                }
+                
+                content += '<div style="margin-top:20px;text-align:center;">';
+                content += '<button onclick="closeBackupModal()" style="background:#E5E5E5;color:#333;border:none;padding:10px 30px;border-radius:6px;cursor:pointer;">關閉</button>';
+                content += '</div>';
+                content += '</div>';
+                
+                modal.innerHTML = content;
+                document.body.appendChild(modal);
+                
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal) closeBackupModal();
+                });
+            });
+        }
+        
+        function closeBackupModal() {
+            var modal = document.getElementById('backupModal');
+            if (modal) modal.remove();
+        }
+        
+        // Firebase 即時監聽
+        function setupFirebaseListeners() {
+            if (!db) {
+                console.warn('Firebase 未初始化，跳過監聽');
+                var el = document.getElementById('syncStatus');
+                if (el) { el.innerHTML = '🔴 離線模式'; el.style.color = '#EF4444'; }
+                return;
+            }
+            db.ref('pipeData').on('value', function(snapshot) {
+                if (isSyncing) return; // 避免自己的寫入觸發重複更新
+                
+                var data = snapshot.val();
+                if (!data) return;
+                
+                var hasChanges = false;
+                
+                // 解析餘料（處理 EMPTY 標記）
+                var remoteRemnants = data.remnants === 'EMPTY' ? [] : (data.remnants || []);
+                // Firebase 會把 Array 轉成 Object（如果有空位），確保是陣列
+                if (!Array.isArray(remoteRemnants)) {
+                    remoteRemnants = Object.values(remoteRemnants);
+                }
+                if (JSON.stringify(remoteRemnants) !== JSON.stringify(remnants)) {
+                    remnants = remoteRemnants;
+                    localStorage.setItem('remnants_v5', JSON.stringify(remnants));
+                    renderRemnants();
+                    hasChanges = true;
+                }
+                
+                // 解析需求（處理 EMPTY 標記）
+                var remoteDemands = data.demands === 'EMPTY' ? [] : (data.demands || []);
+                if (!Array.isArray(remoteDemands)) {
+                    remoteDemands = Object.values(remoteDemands);
+                }
+                if (JSON.stringify(remoteDemands) !== JSON.stringify(demands)) {
+                    demands = remoteDemands;
+                    localStorage.setItem('demands_v5', JSON.stringify(demands));
+                    renderDemands();
+                    hasChanges = true;
+                }
+                
+                if (hasChanges && data.updatedBy && data.updatedBy !== 'mobile') {
+                    console.log('🖥️ 收到來自 ' + data.updatedBy + ' 的同步資料');
+                    var syncIndicator = document.getElementById('syncStatus');
+                    if (syncIndicator) {
+                        syncIndicator.innerHTML = '🟢 已從' + (data.updatedBy === 'desktop' ? '桌面版' : '其他裝置') + '同步';
+                        syncIndicator.style.color = '#10B981';
+                    }
+                }
+            });
+        }
+        
+        // 新增需求
+        function addDemand() {
+            const material = document.getElementById('demandMaterial').value;
+            const type = document.getElementById('demandType').value;
+            const size = getCurrentSize('demand');
+            const thickness = document.getElementById('demandThickness').value;
+            const partNo = document.getElementById('demandPartNo').value.trim();
+            const length = parseFloat(document.getElementById('demandLength').value);
+            const qty = parseInt(document.getElementById('demandQty').value);
+            
+            if (!size) {
+                alert('請選擇常用規格或輸入特殊規格');
+                return;
+            }
+            
+            // 圓棒不需要板厚，其他類型需要
+            const needsThickness = !NO_THICKNESS_TYPES.includes(type);
+            if (needsThickness && (!thickness || parseFloat(thickness) <= 0)) {
+                alert('請選擇板厚');
+                return;
+            }
+            
+            if (length > STOCK_LENGTH) {
+                alert(`長度不能超過原料長度 ${STOCK_LENGTH}mm`);
+                return;
+            }
+            
+            if (length < 10) {
+                alert('長度至少要 10mm');
+                return;
+            }
+            
+            const thicknessValue = needsThickness ? parseFloat(thickness) : 0;
+            demands.push({material, type, size, thickness: thicknessValue, partNo, length, qty});
+            saveToStorage();
+            renderDemands();
+            
+            // 只清空長度和數量，保留類型、規格、板厚的選擇
+            document.getElementById('demandLength').value = '2000';
+            document.getElementById('demandQty').value = '1';
+            
+            // 自動聚焦到長度輸入框，方便繼續輸入
+            document.getElementById('demandLength').focus();
+            document.getElementById('demandLength').select();
+        }
+        
+        // 標籤切換
+        function switchBatchTab(tab) {
+            const stepTab = document.getElementById('tabStep');
+            const excelTab = document.getElementById('tabExcel');
+            const fileTab = document.getElementById('tabFile');
+            const stepArea = document.getElementById('stepInputArea');
+            const excelArea = document.getElementById('excelInputArea');
+            const fileArea = document.getElementById('fileInputArea');
+            var preview = document.getElementById('batchPreview');
+            
+            // 重置所有標籤
+            stepTab.style.background = '#E8E6E3';
+            stepTab.style.color = '#6A6A6A';
+            stepTab.style.fontWeight = 'normal';
+            excelTab.style.background = '#E8E6E3';
+            excelTab.style.color = '#6A6A6A';
+            excelTab.style.fontWeight = 'normal';
+            fileTab.style.background = '#E8E6E3';
+            fileTab.style.color = '#6A6A6A';
+            fileTab.style.fontWeight = 'normal';
+            
+            // 隱藏所有區域
+            stepArea.style.display = 'none';
+            excelArea.style.display = 'none';
+            fileArea.style.display = 'none';
+            
+            // 顯示選中的標籤和區域
+            if (tab === 'step') {
+                stepTab.style.background = '#8B7355';
+                stepTab.style.color = 'white';
+                stepTab.style.fontWeight = '600';
+                stepArea.style.display = 'block';
+            } else if (tab === 'excel') {
+                excelTab.style.background = '#8B7355';
+                excelTab.style.color = 'white';
+                excelTab.style.fontWeight = '600';
+                excelArea.style.display = 'block';
+            } else if (tab === 'file') {
+                fileTab.style.background = '#8B7355';
+                fileTab.style.color = 'white';
+                fileTab.style.fontWeight = '600';
+                fileArea.style.display = 'block';
+            }
+            
+            // 隱藏預覽
+            preview.style.display = 'none';
+        }
+        
+        // 更新行數計數
+        function updateLineCount() {
+            const text = document.getElementById('batchInput').value;
+            const lines = text.split('\n').filter(line => line.trim()).length;
+            document.getElementById('lineCount').textContent = lines;
+        }
+        
+        // 監聽文字輸入
+        document.addEventListener('DOMContentLoaded', function() {
+            const batchInput = document.getElementById('batchInput');
+            if (batchInput) {
+                batchInput.addEventListener('input', updateLineCount);
+                batchInput.addEventListener('paste', function() {
+                    setTimeout(updateLineCount, 100);
+                });
+            }
+            
+            // 監聽 STEP 檔案選擇
+            const stepFileInput = document.getElementById('stepFileInput');
+            if (stepFileInput) {
+                stepFileInput.addEventListener('change', function(e) {
+                    const files = e.target.files;
+                    const fileList = document.getElementById('stepFileList');
+                    const fileListContent = document.getElementById('stepFileListContent');
+                    
+                    if (files.length > 0) {
+                        let html = `<div style="color: #0EA5E9; font-weight: 600; margin-bottom: 8px;">已選擇 ${files.length} 個檔案：</div>`;
+                        for (let i = 0; i < files.length; i++) {
+                            html += `<div style="padding: 3px 0; font-size: 11px;">
+                                ${i + 1}. ${files[i].name} <span style="color: #8A8A8A;">(${(files[i].size / 1024).toFixed(1)} KB)</span>
+                            </div>`;
+                        }
+                        fileListContent.innerHTML = html;
+                        fileList.style.display = 'block';
+                    } else {
+                        fileList.style.display = 'none';
+                    }
+                });
+            }
+        });
+        
+        // 批次輸入解析函數
+        window.parseBatchInput = function() {
+            const batchText = document.getElementById('batchInput').value.trim();
+            const material = document.getElementById('batchMaterial').value;
+            
+            if (!batchText) {
+                alert('請輸入管材明細！');
+                return;
+            }
+            
+            const lines = batchText.split('\n').filter(line => line.trim());
+            const parsedItems = [];
+            const errors = [];
+            
+            lines.forEach((line, index) => {
+                try {
+                    const parsed = parsePipeLine(line.trim());
+                    if (parsed) {
+                        parsedItems.push({...parsed, material});
+                    } else {
+                        errors.push(`第${index + 1}行：無法解析 "${line}"`);
+                    }
+                } catch (e) {
+                    errors.push(`第${index + 1}行：${e.message}`);
+                }
+            });
+            
+            // 顯示預覽
+            var preview = document.getElementById('batchPreview');
+            var previewContent = document.getElementById('batchPreviewContent');
+            
+            if (parsedItems.length > 0) {
+                let html = `<div style="color: #52C41A; font-weight: 600; margin-bottom: 8px;">✅ 成功解析 ${parsedItems.length} 筆</div>`;
+                parsedItems.forEach((item, i) => {
+                    const thicknessDisplay = NO_THICKNESS_TYPES.includes(item.type) ? '(實心)' : `t=${item.thickness}mm`;
+                    html += `<div style="padding: 4px 0; border-bottom: 1px solid #E8E6E3;">
+                        ${i + 1}. ${item.material} | ${PIPE_TYPES[item.type]} | ${item.size} | ${thicknessDisplay} | ${item.length}mm × ${item.qty}支
+                    </div>`;
+                });
+                
+                if (errors.length > 0) {
+                    html += `<div style="color: #E74C3C; margin-top: 10px; font-weight: 600;">⚠️ ${errors.length} 筆錯誤：</div>`;
+                    errors.forEach(err => {
+                        html += `<div style="padding: 2px 0; color: #E74C3C;">• ${err}</div>`;
+                    });
+                }
+                
+                previewContent.innerHTML = html;
+                preview.style.display = 'block';
+                
+                // 確認新增
+                if (confirm(`解析成功 ${parsedItems.length} 筆管材明細\n${errors.length > 0 ? `有 ${errors.length} 筆錯誤\n` : ''}\n確定要新增到需求列表嗎？`)) {
+                    parsedItems.forEach(item => {
+                        demands.push(item);
+                    });
+                    saveToStorage();
+                    renderDemands();
+                    document.getElementById('batchInput').value = '';
+                    preview.style.display = 'none';
+                    alert(`✅ 已新增 ${parsedItems.length} 筆需求！`);
+                }
+            } else {
+                previewContent.innerHTML = '<div style="color: #E74C3C;">❌ 無法解析任何管材明細，請檢查格式</div>';
+                errors.forEach(err => {
+                    previewContent.innerHTML += `<div style="padding: 2px 0; color: #E74C3C;">• ${err}</div>`;
+                });
+                preview.style.display = 'block';
+            }
+        }
+        
+        // 解析單行管材明細
+        function parsePipeLine(line) {
+            console.log('解析行:', line);
+            
+            // 移除多餘空格
+            line = line.replace(/\s+/g, ' ').trim();
+            
+            let type = null;
+            let size = null;
+            let thickness = null;
+            let length = null;
+            let qty = 1;
+            
+            // 判斷管材類型
+            if (line.includes('扁管') || line.includes('扁形管')) type = 'flat';
+            else if (line.includes('方管') || line.includes('方形管')) type = 'square';
+            else if (line.includes('圓管') || line.includes('圓形管')) type = 'round';
+            else if (line.includes('角鐵') || line.includes('L型鋼')) type = 'angle';
+            else if (line.includes('槽鋼') || line.includes('C型鋼')) type = 'channel';
+            
+            // 格式1: 100x50x6Tx304L扁管 或 40x80x4.5Tx590L扁管 (支援小數點)
+            const pattern1 = /(\d+)[xX×](\d+)[xX×](\d+\.?\d*)[Tt][xX×]?(\d+\.?\d*)[Ll]?\s*(扁管|方管|圓管|角鐵|槽鋼)?\s*(\d+)?/;
+            const match1 = line.match(pattern1);
+            if (match1) {
+                size = `${match1[1]}×${match1[2]}`;
+                thickness = parseFloat(match1[3]);
+                length = Math.round(parseFloat(match1[4])); // 四捨五入為整數
+                if (match1[6]) qty = parseInt(match1[6]);
+                if (!type) type = 'flat'; // 預設扁管
+                console.log('匹配格式1:', {size, thickness, length, qty, type});
+                return {type, size, thickness, length, qty, partNo: ''};
+            }
+            
+            // 格式2: 方管38*38*400*5p 或 方管38*38*400L
+            const pattern2 = /(方管|圓管|扁管|角鐵|槽鋼)?\s*(\d+)[*×xX](\d+)?[*×xX]?(\d+)[Ll]?[*×xX]?(\d+)?[Pp]?/;
+            const match2 = line.match(pattern2);
+            if (match2) {
+                if (match2[1]) {
+                    if (match2[1].includes('方管')) type = 'square';
+                    else if (match2[1].includes('圓管')) type = 'round';
+                    else if (match2[1].includes('扁管')) type = 'flat';
+                    else if (match2[1].includes('角鐵')) type = 'angle';
+                    else if (match2[1].includes('槽鋼')) type = 'channel';
+                }
+                
+                if (!type) type = 'square'; // 預設方管
+                
+                if (match2[3]) {
+                    // 有兩個尺寸 (扁管或方管)
+                    size = `${match2[2]}×${match2[3]}`;
+                    length = parseInt(match2[4]);
+                    if (match2[5]) qty = parseInt(match2[5]);
+                } else {
+                    // 只有一個尺寸 (圓管)
+                    if (type === 'round') {
+                        size = `Ø${match2[2]}`;
+                    } else {
+                        size = `${match2[2]}×${match2[2]}`;
+                    }
+                    length = parseInt(match2[4] || match2[2]);
+                    if (match2[5]) qty = parseInt(match2[5]);
+                }
+                
+                // 預設板厚
+                if (!thickness) {
+                    thickness = 2; // 預設2mm
+                }
+                
+                console.log('匹配格式2:', {size, thickness, length, qty, type});
+                return {type, size, thickness, length, qty, partNo: ''};
+            }
+            
+            // 格式3: 圓管50*500*2p
+            const pattern3 = /(圓管|圓形管)\s*[ØΦ]?(\d+)[*×xX](\d+)[*×xX]?(\d+)?[Pp]?/;
+            const match3 = line.match(pattern3);
+            if (match3) {
+                type = 'round';
+                size = `Ø${match3[2]}`;
+                length = parseInt(match3[3]);
+                if (match3[4]) qty = parseInt(match3[4]);
+                thickness = 2; // 預設2mm
+                console.log('匹配格式3:', {size, thickness, length, qty, type});
+                return {type, size, thickness, length, qty, partNo: ''};
+            }
+            
+            console.log('無法解析:', line);
+            return null;
+        }
+        
+        // DXF 檔案解析
+        
+        // 從 DXF 提取所有文字
+        function extractTextsFromDXF(dxf) {
+            const texts = [];
+            
+            try {
+                // 提取 TEXT 實體
+                if (dxf.entities && dxf.entities.length > 0) {
+                    dxf.entities.forEach(entity => {
+                        if (entity.type === 'TEXT' || entity.type === 'MTEXT') {
+                            if (entity.text && entity.text.trim()) {
+                                texts.push(entity.text.trim());
+                            }
+                        }
+                        
+                        // 提取圖塊中的文字
+                        if (entity.type === 'INSERT' && entity.attributes) {
+                            entity.attributes.forEach(attr => {
+                                if (attr.text && attr.text.trim()) {
+                                    texts.push(attr.text.trim());
+                                }
+                            });
+                        }
+                    });
+                }
+                
+                // 提取圖塊定義中的文字
+                if (dxf.blocks) {
+                    Object.values(dxf.blocks).forEach(block => {
+                        if (block.entities) {
+                            block.entities.forEach(entity => {
+                                if ((entity.type === 'TEXT' || entity.type === 'MTEXT') && entity.text) {
+                                    texts.push(entity.text.trim());
+                                }
+                            });
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('提取文字時發生錯誤:', error);
+            }
+            
+            return texts;
+        }
+        
+        // 尋找管材相關文字
+        function findPipeTexts(texts) {
+            const pipeTexts = [];
+            const seenTexts = new Set();
+            
+            texts.forEach(text => {
+                // 避免重複
+                if (seenTexts.has(text)) return;
+                
+                // 檢查是否包含管材關鍵字或格式
+                const hasPipeKeyword = /扁管|方管|圓管|角鐵|槽鋼/.test(text);
+                const hasPipeFormat = /\d+[xX×]\d+[xX×]\d+[Tt]/.test(text) || // 100x50x6T
+                                     /\d+[*×xX]\d+[*×xX]\d+/.test(text) ||    // 38*38*400
+                                     /[ØΦ]?\d+[*×xX]\d+/.test(text);          // Ø50*500
+                
+                if (hasPipeKeyword || hasPipeFormat) {
+                    pipeTexts.push(text);
+                    seenTexts.add(text);
+                }
+            });
+            
+            return pipeTexts;
+        }
+        
+        // 自動偵測材質
+        function detectMaterial(texts) {
+            for (let text of texts) {
+                const upperText = text.toUpperCase();
+                
+                // 檢查 SS41 / SS400
+                if (/SS41|SS400|S45C|碳鋼/.test(upperText)) {
+                    return '01';
+                }
+                
+                // 檢查 SUS / 不鏽鋼
+                if (/SUS|304|316|不鏽鋼|不銹鋼/.test(upperText)) {
+                    return '02';
+                }
+                
+                // 檢查 PG / 鍍鋅
+                if (/PG|GALV|鍍鋅|镀锌/.test(upperText)) {
+                    return '03';
+                }
+            }
+            
+            return null; // 無法偵測
+        }
+        
+        // Excel 檔案解析
+        
+        // 讀取檔案為文字
+        
+        // STEP 檔案解析（支援3D幾何讀取）
+        
+        // 從 STEP 3D 幾何解析管材尺寸
+        
+        // 解析 STEP 檔名
+        
+        // 合併相同規格的 STEP 管材
+        
+        // 刪除需求
+        function deleteDemand(index) {
+            demands.splice(index, 1);
+            saveToStorage();
+            renderDemands();
+        }
+        
+        // 清空需求
+        function clearDemands() {
+            if (demands.length === 0) return;
+            if (confirm('確定要清空所有需求嗎？')) {
+                demands = [];
+                saveToStorage();
+                renderDemands();
+            }
+        }
+        
+        // 渲染需求列表
+        function renderDemands() {
+            const tbody = document.getElementById('demandBody');
+            if (demands.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">尚無需求</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = demands.map((d, i) => `
+                <tr>
+                    <td><span class="type-badge" style="background:#E8E6E3;color:#4A4A4A;">${d.material || '-'}</span></td>
+                    <td><span class="type-badge">${PIPE_TYPES[d.type]}</span></td>
+                    <td style="font-size:12px;">${d.size}<br><span style="color:#8A8A8A;font-size:11px;">${NO_THICKNESS_TYPES.includes(d.type) ? '(實心)' : `t=${d.thickness}mm`}</span></td>
+                    <td style="font-size:13px;color:#8B7355;font-weight:600;">${d.partNo || '-'}</td>
+                    <td style="font-size:13px;font-weight:600;">${d.length}mm</td>
+                    <td style="font-size:13px;font-weight:600;">${d.qty}支</td>
+                    <td><button class="btn-danger" onclick="deleteDemand(${i})">刪除</button></td>
+                </tr>
+            `).join('');
+        }
+        
+        // 流水號管理
+        function getNextRemnantId(material) {
+            // 獲取該材質的所有現有編號
+            const existingIds = remnants
+                .filter(r => r.material === material)
+                .map(r => r.id)
+                .sort((a, b) => a - b);
+            
+            // 找最小的空缺編號
+            for (let i = 1; i <= existingIds.length + 1; i++) {
+                if (!existingIds.includes(i)) {
+                    return i;
+                }
+            }
+            return 1;
+        }
+        
+        function formatRemnantId(material, id) {
+            // 格式：01001, 02003, 03015
+            // 材質2位 + 流水號3位
+            return `${material}${String(id).padStart(3, '0')}`;
+        }
+        
+        // 新增餘料
+        function addRemnant() {
+            const material = document.getElementById('remnantMaterial').value;
+            const type = document.getElementById('remnantType').value;
+            const size = getCurrentSize('remnant');
+            const thickness = document.getElementById('remnantThickness').value;
+            const location = document.getElementById('remnantLocation').value;
+            const length = parseInt(document.getElementById('remnantLength').value);
+            const qty = parseInt(document.getElementById('remnantQty').value);
+            
+            if (!size) {
+                alert('請選擇常用規格或輸入特殊規格');
+                return;
+            }
+            
+            // 圓棒不需要板厚，其他類型需要
+            const needsThickness = !NO_THICKNESS_TYPES.includes(type);
+            if (needsThickness && (!thickness || parseFloat(thickness) <= 0)) {
+                alert('請輸入板厚');
+                return;
+            }
+            
+            if (length < MIN_REMNANT) {
+                alert(`餘料長度必須 ≥ ${MIN_REMNANT}mm`);
+                return;
+            }
+            
+            // 獲取流水編號
+            const id = getNextRemnantId(material);
+            const remnantCode = formatRemnantId(material, id);
+            
+            // 新增餘料
+            const thicknessValue = needsThickness ? parseFloat(thickness) : 0;
+            remnants.push({
+                id: id,
+                material: material,
+                remnantCode: remnantCode,
+                type, 
+                size, 
+                thickness: thicknessValue,
+                location,
+                length, 
+                qty
+            });
+            
+            // 排序：按材質、編號
+            remnants.sort((a, b) => {
+                if (a.material !== b.material) return a.material.localeCompare(b.material);
+                return a.id - b.id;
+            });
+            
+            saveToStorage();
+            renderRemnants();
+            const thicknessText = needsThickness ? ` t=${thickness}mm` : ' (實心)';
+            alert(`已新增餘料 ${remnantCode}\n${PIPE_TYPES[type]} ${size}${thicknessText} ${length}mm × ${qty}支\n存放地點：${location}`);
+            
+            // 清空輸入
+            document.getElementById('remnantSizePreset').value = '';
+            document.getElementById('remnantSizeCustom').value = '';
+            document.getElementById('remnantThickness').value = '';
+            document.getElementById('remnantSizeCustom').placeholder = '或輸入特殊規格';
+        }
+        
+        // 刪除餘料
+        function deleteRemnant(remnantCode) {
+            console.log('準備刪除餘料:', remnantCode);
+            console.log('當前餘料列表:', remnants);
+            
+            const remnantToDelete = remnants.find(r => r.remnantCode === remnantCode);
+            console.log('找到的餘料:', remnantToDelete);
+            
+            if (!remnantToDelete) {
+                alert(`找不到餘料 ${remnantCode}！`);
+                return;
+            }
+            
+            const message = `確定要刪除餘料 ${remnantCode} 嗎？\n\n` +
+                          `材質: ${remnantToDelete.material}\n` +
+                          `類型: ${PIPE_TYPES[remnantToDelete.type]}\n` +
+                          `規格: ${remnantToDelete.size}\n` +
+                          `長度: ${remnantToDelete.length}mm\n` +
+                          `數量: ${remnantToDelete.qty}支\n` +
+                          `地點: ${remnantToDelete.location}\n\n` +
+                          `刪除後編號可重複使用。`;
+            
+            if (confirm(message)) {
+                const originalLength = remnants.length;
+                remnants = remnants.filter(r => r.remnantCode !== remnantCode);
+                const newLength = remnants.length;
+                
+                console.log(`刪除前數量: ${originalLength}, 刪除後數量: ${newLength}`);
+                
+                if (originalLength === newLength) {
+                    alert(`刪除失敗！餘料 ${remnantCode} 無法刪除。\n請重新整理頁面後再試。`);
+                    return;
+                }
+                
+                saveToStorage();
+                renderRemnants();
+                console.log(`成功刪除餘料 ${remnantCode}`);
+            }
+        }
+        
+        // 清空餘料
+        function clearRemnants() {
+            if (remnants.length === 0) {
+                alert('目前沒有餘料可清除');
+                return;
+            }
+            
+            const count = remnants.length;
+            if (confirm(`⚠️ 確定要清空所有餘料嗎？\n\n目前有 ${count} 筆餘料記錄\n此操作無法復原！`)) {
+                remnants = [];
+                saveToStorage();
+                renderRemnants();
+                alert('✅ 已清空所有餘料！');
+            }
+        }
+        
+        // 渲染餘料列表
+        // 排序餘料
+        function sortRemnants(field) {
+            if (remnantSortField === field) {
+                remnantSortOrder = remnantSortOrder === 'asc' ? 'desc' : 'asc';
+            } else {
+                remnantSortField = field;
+                remnantSortOrder = 'asc';
+            }
+            renderRemnants();
+        }
+        
+        // 排序下拉選單變更
+        function handleSortChange() {
+            const val = document.getElementById('remnantSortSelect').value;
+            if (!val) return;
+            const [field, order] = val.split('-');
+            remnantSortField = field;
+            remnantSortOrder = order;
+            renderRemnants();
+        }
+        
+        function renderRemnants() {
+            const container = document.getElementById('remnantCards');
+            const searchText = (document.getElementById('remnantSearch')?.value || '').toLowerCase().trim();
+            
+            if (remnants.length === 0) {
+                container.innerHTML = '<div style="text-align:center;color:#999;padding:40px;">尚無餘料</div>';
+                return;
+            }
+            
+            // 過濾
+            let filteredRemnants = remnants;
+            if (searchText) {
+                filteredRemnants = remnants.filter(r => {
+                    const text = `${r.remnantCode} ${r.size} ${r.location} ${PIPE_TYPES[r.type]} ${r.length}`.toLowerCase();
+                    return text.includes(searchText);
+                });
+            }
+            
+            // 排序
+            let sortedRemnants = [...filteredRemnants];
+            if (remnantSortField) {
+                sortedRemnants.sort((a, b) => {
+                    // 如果是按類型或規格排序，使用多欄位排序（類型 → 規格 → 板厚 → 長度）
+                    if (remnantSortField === 'type' || remnantSortField === 'size') {
+                        // 先比較類型
+                        const typeCompare = (PIPE_TYPES[a.type] || '').localeCompare(PIPE_TYPES[b.type] || '');
+                        if (typeCompare !== 0) return remnantSortOrder === 'asc' ? typeCompare : -typeCompare;
+                        
+                        // 再比較規格
+                        const sizeCompare = (a.size || '').localeCompare(b.size || '');
+                        if (sizeCompare !== 0) return remnantSortOrder === 'asc' ? sizeCompare : -sizeCompare;
+                        
+                        // 再比較板厚
+                        const thickCompare = (a.thickness || 0) - (b.thickness || 0);
+                        if (thickCompare !== 0) return remnantSortOrder === 'asc' ? thickCompare : -thickCompare;
+                        
+                        // 最後比較長度
+                        return remnantSortOrder === 'asc' ? a.length - b.length : b.length - a.length;
+                    }
+                    
+                    // 其他欄位的排序
+                    let valA = a[remnantSortField];
+                    let valB = b[remnantSortField];
+                    
+                    if (typeof valA === 'number' && typeof valB === 'number') {
+                        return remnantSortOrder === 'asc' ? valA - valB : valB - valA;
+                    }
+                    
+                    valA = String(valA || '').toLowerCase();
+                    valB = String(valB || '').toLowerCase();
+                    if (valA < valB) return remnantSortOrder === 'asc' ? -1 : 1;
+                    if (valA > valB) return remnantSortOrder === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+            
+            if (sortedRemnants.length === 0) {
+                container.innerHTML = '<div style="text-align:center;color:#999;padding:40px;">找不到符合的餘料</div>';
+                return;
+            }
+            
+            // 材質名稱
+            const materialNames = {'01': 'SS41-碳鋼', '02': 'SUS-不鏽鋼', '03': 'PG-鍍鋅'};
+            
+            let html = '';
+            sortedRemnants.forEach((r) => {
+                const thicknessText = NO_THICKNESS_TYPES.includes(r.type) ? '(實心)' : `t=${r.thickness}mm`;
+                const materialName = materialNames[r.material] || r.material;
+                
+                html += `
+                <div class="remnant-card" data-code="${r.remnantCode}" style="
+                    background: white;
+                    border: 1px solid #E8E6E3;
+                    border-radius: 8px;
+                    padding: 12px;
+                    margin-bottom: 10px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                ">
+                    <!-- 頂部：編號 + 地點 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 700; color: #8B7355; font-size: 15px;">${r.remnantCode}</span>
+                        <select class="card-location-select" data-code="${r.remnantCode}" style="
+                            padding: 4px 8px;
+                            border: 1px solid #E8E6E3;
+                            border-radius: 4px;
+                            font-size: 12px;
+                            background: #F9F8F6;
+                        ">
+                            <option value="貨櫃" ${r.location === '貨櫃' ? 'selected' : ''}>📍 貨櫃</option>
+                            <option value="折床上方" ${r.location === '折床上方' ? 'selected' : ''}>📍 折床上方</option>
+                            <option value="鋸床管料區" ${r.location === '鋸床管料區' ? 'selected' : ''}>📍 鋸床管料區</option>
+                        </select>
+                    </div>
+                    
+                    <!-- 中間：規格資訊 -->
+                    <div style="background: #F9F8F6; border-radius: 6px; padding: 10px; margin-bottom: 10px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+                            <span class="type-tag type-${r.type}">${PIPE_TYPES[r.type]}</span>
+                            <span style="font-size: 16px; font-weight: 600; color: #4A4A4A;">${r.size}</span>
+                            <span style="color: #8A8A8A; font-size: 13px;">${thicknessText}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #6A6A6A;">
+                            ${materialName}
+                        </div>
+                    </div>
+                    
+                    <!-- 底部：長度 + 數量 + 操作 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="display: flex; gap: 15px;">
+                            <div>
+                                <span style="color: #8A8A8A; font-size: 11px;">長度</span><br>
+                                <span style="font-weight: 700; font-size: 15px; color: #4A4A4A;">${r.length}mm</span>
+                            </div>
+                            <div>
+                                <span style="color: #8A8A8A; font-size: 11px;">數量</span><br>
+                                <span style="font-weight: 700; font-size: 15px; color: #4A4A4A;">${r.qty}支</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 6px;">
+                            <button onclick="editRemnantCard('${r.remnantCode}')" style="
+                                padding: 6px 12px;
+                                background: #8B7355;
+                                color: white;
+                                border: none;
+                                border-radius: 4px;
+                                font-size: 12px;
+                                cursor: pointer;
+                            ">編輯</button>
+                            <button onclick="deleteRemnant('${r.remnantCode}')" style="
+                                padding: 6px 12px;
+                                background: #E74C3C;
+                                color: white;
+                                border: none;
+                                border-radius: 4px;
+                                font-size: 12px;
+                                cursor: pointer;
+                            ">刪除</button>
+                        </div>
+                    </div>
+                </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+            
+            // 綁定地點下拉事件
+            container.querySelectorAll('.card-location-select').forEach(select => {
+                select.addEventListener('change', function() {
+                    updateRemnantLocation(this.dataset.code, this.value);
+                });
+            });
+        }
+        
+        // 編輯餘料卡片 (彈出編輯視窗)
+        function editRemnantCard(remnantCode) {
+            const r = remnants.find(rem => rem.remnantCode === remnantCode);
+            if (!r) return;
+            
+            const thicknessText = NO_THICKNESS_TYPES.includes(r.type) ? '(實心)' : r.thickness;
+            const needsThickness = !NO_THICKNESS_TYPES.includes(r.type);
+            
+            const html = `
+            <div id="editRemnantModal" style="
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.5);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 9999;
+                padding: 20px;
+            ">
+                <div style="
+                    background: white;
+                    border-radius: 12px;
+                    padding: 20px;
+                    width: 100%;
+                    max-width: 350px;
+                    max-height: 90vh;
+                    overflow-y: auto;
+                ">
+                    <h3 style="margin: 0 0 15px 0; color: #4A4A4A; font-size: 18px;">編輯餘料 ${remnantCode}</h3>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">材質</label>
+                        <select id="editMaterial" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px;">
+                            <option value="01" ${r.material === '01' ? 'selected' : ''}>01 (SS41-碳鋼)</option>
+                            <option value="02" ${r.material === '02' ? 'selected' : ''}>02 (SUS-不鏽鋼)</option>
+                            <option value="03" ${r.material === '03' ? 'selected' : ''}>03 (PG-鍍鋅)</option>
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">類型</label>
+                        <select id="editType" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px;">
+                            ${Object.entries(PIPE_TYPES).map(([key, val]) => 
+                                `<option value="${key}" ${r.type === key ? 'selected' : ''}>${val}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">規格</label>
+                        <input type="text" id="editSize" value="${r.size}" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                    
+                    <div style="margin-bottom: 12px; ${needsThickness ? '' : 'display:none;'}" id="editThicknessGroup">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">板厚 (mm)</label>
+                        <input type="number" id="editThickness" value="${r.thickness}" step="0.1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">長度 (mm)</label>
+                        <input type="number" id="editLength" value="${r.length}" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">數量</label>
+                        <input type="number" id="editQty" value="${r.qty}" min="1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px;">
+                        <button onclick="closeEditModal()" style="
+                            flex: 1;
+                            padding: 12px;
+                            background: #E8E6E3;
+                            color: #4A4A4A;
+                            border: none;
+                            border-radius: 6px;
+                            font-size: 14px;
+                            cursor: pointer;
+                        ">取消</button>
+                        <button onclick="saveRemnantEdit('${remnantCode}')" style="
+                            flex: 1;
+                            padding: 12px;
+                            background: #8B7355;
+                            color: white;
+                            border: none;
+                            border-radius: 6px;
+                            font-size: 14px;
+                            cursor: pointer;
+                        ">儲存</button>
+                    </div>
+                </div>
+            </div>
+            `;
+            
+            document.body.insertAdjacentHTML('beforeend', html);
+            
+            // 類型改變時控制板厚顯示
+            document.getElementById('editType').addEventListener('change', function() {
+                const thicknessGroup = document.getElementById('editThicknessGroup');
+                if (NO_THICKNESS_TYPES.includes(this.value)) {
+                    thicknessGroup.style.display = 'none';
+                } else {
+                    thicknessGroup.style.display = 'block';
+                }
+            });
+        }
+        
+        function closeEditModal() {
+            const modal = document.getElementById('editRemnantModal');
+            if (modal) modal.remove();
+        }
+        
+        function saveRemnantEdit(remnantCode) {
+            const r = remnants.find(rem => rem.remnantCode === remnantCode);
+            if (!r) return;
+            
+            const newMaterial = document.getElementById('editMaterial').value;
+            const newType = document.getElementById('editType').value;
+            
+            // 更新編號前綴
+            if (newMaterial !== r.material) {
+                const suffix = r.remnantCode.substring(2);
+                r.remnantCode = newMaterial + suffix;
+            }
+            
+            r.material = newMaterial;
+            r.type = newType;
+            r.size = document.getElementById('editSize').value;
+            r.thickness = NO_THICKNESS_TYPES.includes(newType) ? 0 : parseFloat(document.getElementById('editThickness').value) || 0;
+            r.length = parseFloat(document.getElementById('editLength').value) || 0;
+            r.qty = parseInt(document.getElementById('editQty').value) || 1;
+            
+            saveToStorage();
+            closeEditModal();
+            renderRemnants();
+        }
+        
+        // 編輯餘料類型
+        function editRemnantType(remnantCode, cell) {
+            const remnant = remnants.find(r => r.remnantCode === remnantCode);
+            if (!remnant) return;
+            
+            const select = document.createElement('select');
+            select.style.cssText = 'padding: 4px; font-size: 12px; border-radius: 4px; border: 1px solid #3B82F6;';
+            
+            Object.entries(PIPE_TYPES).forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                if (remnant.type === value) option.selected = true;
+                select.appendChild(option);
+            });
+            
+            cell.innerHTML = '';
+            cell.appendChild(select);
+            select.focus();
+            
+            select.onchange = function() {
+                remnant.type = this.value;
+                saveToStorage();
+                renderRemnants();
+            };
+            
+            select.onblur = function() {
+                renderRemnants();
+            };
+        }
+        
+        // 編輯餘料規格和板厚
+        function editRemnantSizeAndThickness(remnantCode, cell) {
+            const remnant = remnants.find(r => r.remnantCode === remnantCode);
+            if (!remnant) return;
+            
+            const needsThickness = !NO_THICKNESS_TYPES.includes(remnant.type);
+            
+            const container = document.createElement('div');
+            container.style.cssText = 'display: flex; flex-direction: column; gap: 4px;';
+            
+            const inputSize = document.createElement('input');
+            inputSize.type = 'text';
+            inputSize.value = remnant.size;
+            inputSize.placeholder = '規格';
+            inputSize.style.cssText = 'width: 70px; padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #8B7355;';
+            
+            container.appendChild(inputSize);
+            
+            let inputThickness = null;
+            if (needsThickness) {
+                inputThickness = document.createElement('input');
+                inputThickness.type = 'number';
+                inputThickness.value = remnant.thickness;
+                inputThickness.placeholder = '板厚';
+                inputThickness.step = '0.1';
+                inputThickness.style.cssText = 'width: 70px; padding: 4px; font-size: 11px; border-radius: 4px; border: 1px solid #8B7355;';
+                container.appendChild(inputThickness);
+            }
+            
+            cell.innerHTML = '';
+            cell.appendChild(container);
+            inputSize.focus();
+            
+            function saveChanges() {
+                const newSize = inputSize.value.trim();
+                
+                if (newSize) remnant.size = newSize;
+                if (inputThickness) {
+                    const newThickness = parseFloat(inputThickness.value);
+                    if (!isNaN(newThickness) && newThickness >= 0) remnant.thickness = newThickness;
+                }
+                
+                saveToStorage();
+                renderRemnants();
+            }
+            
+            inputSize.onkeydown = function(e) {
+                if (e.key === 'Enter') saveChanges();
+                if (e.key === 'Escape') renderRemnants();
+            };
+            
+            if (inputThickness) {
+                inputThickness.onkeydown = function(e) {
+                    if (e.key === 'Enter') saveChanges();
+                    if (e.key === 'Escape') renderRemnants();
+                };
+                
+                inputThickness.onblur = function(e) {
+                    // 延遲檢查，避免在切換到另一個輸入框時觸發
+                    setTimeout(() => {
+                        if (!container.contains(document.activeElement)) {
+                            saveChanges();
+                        }
+                    }, 100);
+                };
+            }
+            
+            inputSize.onblur = function(e) {
+                setTimeout(() => {
+                    if (!container.contains(document.activeElement)) {
+                        saveChanges();
+                    }
+                }, 100);
+            };
+        }
+        
+        // 編輯餘料長度（含自動拆分邏輯）
+        function editRemnantLength(remnantCode, cell) {
+            const remnant = remnants.find(r => r.remnantCode === remnantCode);
+            if (!remnant) return;
+            
+            const originalLength = remnant.length;
+            const originalQty = remnant.qty;
+            let isSaving = false; // 防止重複執行
+            
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.value = remnant.length;
+            input.style.cssText = 'width: 70px; padding: 4px; font-size: 12px; border-radius: 4px; border: 1px solid #3B82F6;';
+            
+            cell.innerHTML = '';
+            cell.appendChild(input);
+            input.focus();
+            input.select();
+            
+            function saveChanges() {
+                // 防止重複執行
+                if (isSaving) return;
+                isSaving = true;
+                
+                const newLength = parseInt(input.value);
+                if (!isNaN(newLength) && newLength > 0) {
+                    // 檢查是否需要拆分：數量 > 1 且 長度變小
+                    if (originalQty > 1 && newLength < originalLength) {
+                        // 詢問使用者
+                        const confirmSplit = confirm(
+                            `您將 ${originalLength}mm 改為 ${newLength}mm\n` +
+                            `原本有 ${originalQty} 支\n\n` +
+                            `是否要拆分成：\n` +
+                            `• ${originalLength}mm × ${originalQty - 1} 支（原編號）\n` +
+                            `• ${newLength}mm × 1 支（新編號）\n\n` +
+                            `按「確定」拆分，按「取消」全部改成 ${newLength}mm`
+                        );
+                        
+                        if (confirmSplit) {
+                            // 拆分：原編號減少1支
+                            remnant.qty = originalQty - 1;
+                            
+                            // 產生新編號
+                            const newCode = generateNewRemnantCode(remnant.material);
+                            
+                            // 新增一筆新長度的餘料
+                            const newRemnant = {
+                                id: Date.now(),
+                                material: remnant.material,
+                                remnantCode: newCode,
+                                type: remnant.type,
+                                size: remnant.size,
+                                thickness: remnant.thickness,
+                                location: remnant.location,
+                                length: newLength,
+                                qty: 1
+                            };
+                            
+                            remnants.push(newRemnant);
+                            saveToStorage();
+                            renderRemnants();
+                            
+                            // 顯示通知
+                            showSplitNotification(remnantCode, newCode, originalLength, newLength, originalQty);
+                            return;
+                        }
+                    }
+                    
+                    // 不拆分，直接修改
+                    remnant.length = newLength;
+                    saveToStorage();
+                }
+                renderRemnants();
+            }
+            
+            input.onkeydown = function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    input.onblur = null; // 移除 blur 事件，避免重複觸發
+                    saveChanges();
+                }
+                if (e.key === 'Escape') {
+                    input.onblur = null;
+                    renderRemnants();
+                }
+            };
+            
+            input.onblur = saveChanges;
+        }
+        
+        // 產生新的餘料編號
+        function generateNewRemnantCode(material) {
+            // 找出該材質目前最大的編號
+            const prefix = material; // 01, 02, 03
+            let maxNum = 0;
+            
+            remnants.forEach(r => {
+                if (r.remnantCode && r.remnantCode.startsWith(prefix)) {
+                    const num = parseInt(r.remnantCode.substring(2));
+                    if (!isNaN(num) && num > maxNum) {
+                        maxNum = num;
+                    }
+                }
+            });
+            
+            // 新編號 = 最大編號 + 1
+            const newNum = maxNum + 1;
+            return prefix + newNum.toString().padStart(3, '0');
+        }
+        
+        // 顯示拆分通知
+        function showSplitNotification(oldCode, newCode, oldLength, newLength, oldQty) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 80px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+                color: white;
+                padding: 16px 24px;
+                border-radius: 12px;
+                box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+                z-index: 10000;
+                font-size: 14px;
+                max-width: 90%;
+                text-align: center;
+                animation: slideIn 0.3s ease;
+            `;
+            notification.innerHTML = `
+                <div style="font-weight: 700; margin-bottom: 8px;">✂️ 餘料已拆分</div>
+                <div style="font-size: 12px;">
+                    ${oldCode}: ${oldLength}mm × ${oldQty - 1}支<br>
+                    ${newCode}: ${newLength}mm × 1支（新增）
+                </div>
+            `;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'fadeOut 0.3s ease forwards';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+        
+        // 編輯餘料數量
+        function editRemnantQty(remnantCode, cell) {
+            const remnant = remnants.find(r => r.remnantCode === remnantCode);
+            if (!remnant) return;
+            
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.value = remnant.qty;
+            input.min = '1';
+            input.style.cssText = 'width: 50px; padding: 4px; font-size: 12px; border-radius: 4px; border: 1px solid #3B82F6;';
+            
+            cell.innerHTML = '';
+            cell.appendChild(input);
+            input.focus();
+            input.select();
+            
+            function saveChanges() {
+                const newQty = parseInt(input.value);
+                if (!isNaN(newQty) && newQty > 0) {
+                    remnant.qty = newQty;
+                    saveToStorage();
+                }
+                renderRemnants();
+            }
+            
+            input.onkeydown = function(e) {
+                if (e.key === 'Enter') saveChanges();
+                if (e.key === 'Escape') renderRemnants();
+            };
+            
+            input.onblur = saveChanges;
+        }
+        
+        // 更新餘料地點
+        function updateRemnantLocation(remnantCode, newLocation) {
+            const remnant = remnants.find(r => r.remnantCode === remnantCode);
+            if (remnant) {
+                const oldLocation = remnant.location;  // 記錄舊地點
+                remnant.location = newLocation;
+                saveToStorage();
+                
+                // 顯示更改提示
+                showLocationChangeNotification(remnantCode, oldLocation, newLocation);
+                
+                console.log(`已更新 ${remnantCode} 的地點：${oldLocation} → ${newLocation}`);
+            }
+        }
+        
+        // 顯示地點更改通知
+        function showLocationChangeNotification(remnantCode, oldLocation, newLocation) {
+            // 創建通知元素
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 80px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+                color: white;
+                padding: 16px 24px;
+                border-radius: 12px;
+                box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4);
+                z-index: 10000;
+                font-size: 15px;
+                font-weight: 600;
+                min-width: 300px;
+                max-width: 90%;
+                animation: slideDown 0.3s ease-out;
+            `;
+            
+            notification.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="font-size: 28px;">📦</div>
+                    <div style="flex: 1;">
+                        <div style="font-size: 16px; margin-bottom: 4px;">餘料地點已更新</div>
+                        <div style="font-size: 13px; opacity: 0.95;">
+                            <strong>${remnantCode}</strong>
+                        </div>
+                        <div style="font-size: 12px; opacity: 0.85; margin-top: 4px;">
+                            ${oldLocation} → ${newLocation}
+                        </div>
+                    </div>
+                    <div style="font-size: 24px;">✅</div>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // 3秒後自動消失
+            setTimeout(() => {
+                notification.style.animation = 'slideUp 0.3s ease-out';
+                setTimeout(() => {
+                    document.body.removeChild(notification);
+                }, 300);
+            }, 3000);
+        }
+        
+        // 切割優化算法
+        function optimize(demandList, remnantList, goal) {
+            // 展開需求
+            let demandItems = [];
+            demandList.forEach(d => {
+                for (let i = 0; i < d.qty; i++) {
+                    demandItems.push({material: d.material, type: d.type, size: d.size, thickness: d.thickness, length: d.length, partNo: d.partNo});
+                }
+            });
+            demandItems.sort((a, b) => b.length - a.length);
+            
+            // 展開餘料
+            let remnantStock = [];
+            remnantList.forEach(r => {
+                for (let i = 0; i < r.qty; i++) {
+                    remnantStock.push({material: r.material, remnantCode: r.remnantCode, type: r.type, size: r.size, thickness: r.thickness, length: r.length});
+                }
+            });
+            // 由短到長排序，優先使用剛好夠用的短料
+            remnantStock.sort((a, b) => a.length - b.length);
+            
+            let patterns = [];
+            let remainingDemands = [...demandItems];
+            let usedRemnants = 0;
+            let usedNewStock = 0;
+            
+            // 根據優化目標決定順序
+            if (goal === 'new-stock') {
+                // 優先使用新料
+                while (remainingDemands.length > 0) {
+                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    if (pattern.cuts.length === 0) break;
+                    
+                    usedNewStock++;
+                    patterns.push({
+                        type: '新料',
+                        material: pattern.cuts[0].material,
+                        pipeType: pattern.cuts[0].type,
+                        pipeSize: pattern.cuts[0].size,
+                        pipeThickness: pattern.cuts[0].thickness,
+                        stockLength: STOCK_LENGTH,
+                        cuts: pattern.cuts,
+                        remnant: pattern.remnant,
+                        utilization: pattern.utilization
+                    });
+                }
+                
+                // 再使用餘料
+                for (let remnant of remnantStock) {
+                    if (remainingDemands.length === 0) break;
+                    let pattern = fitPiecesWithTypeAndSize(remnant.length, remainingDemands, remnant.material, remnant.type, remnant.size, remnant.thickness);
+                    if (pattern.cuts.length > 0) {
+                        usedRemnants++;
+                        patterns.push({
+                            type: '餘料',
+                            material: remnant.material,
+                            remnantCode: remnant.remnantCode,
+                            pipeType: remnant.type,
+                            pipeSize: remnant.size,
+                            pipeThickness: remnant.thickness,
+                            stockLength: remnant.length,
+                            cuts: pattern.cuts,
+                            remnant: pattern.remnant,
+                            utilization: pattern.utilization
+                        });
+                    }
+                }
+            } else if (goal === 'remnant') {
+                // 優先使用餘料
+                for (let remnant of remnantStock) {
+                    if (remainingDemands.length === 0) break;
+                    let pattern = fitPiecesWithTypeAndSize(remnant.length, remainingDemands, remnant.material, remnant.type, remnant.size, remnant.thickness);
+                    if (pattern.cuts.length > 0) {
+                        usedRemnants++;
+                        patterns.push({
+                            type: '餘料',
+                            material: remnant.material,
+                            remnantCode: remnant.remnantCode,
+                            pipeType: remnant.type,
+                            pipeSize: remnant.size,
+                            pipeThickness: remnant.thickness,
+                            stockLength: remnant.length,
+                            cuts: pattern.cuts,
+                            remnant: pattern.remnant,
+                            utilization: pattern.utilization
+                        });
+                    }
+                }
+                
+                // 再使用新料
+                while (remainingDemands.length > 0) {
+                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    if (pattern.cuts.length === 0) break;
+                    
+                    usedNewStock++;
+                    patterns.push({
+                        type: '新料',
+                        material: pattern.cuts[0].material,
+                        pipeType: pattern.cuts[0].type,
+                        pipeSize: pattern.cuts[0].size,
+                        pipeThickness: pattern.cuts[0].thickness,
+                        stockLength: STOCK_LENGTH,
+                        cuts: pattern.cuts,
+                        remnant: pattern.remnant,
+                        utilization: pattern.utilization
+                    });
+                }
+            } else {
+                // 默認：最大化利用率
+                for (let remnant of remnantStock) {
+                    if (remainingDemands.length === 0) break;
+                    let pattern = fitPiecesWithTypeAndSize(remnant.length, remainingDemands, remnant.material, remnant.type, remnant.size, remnant.thickness);
+                    if (pattern.cuts.length > 0) {
+                        usedRemnants++;
+                        patterns.push({
+                            type: '餘料',
+                            material: remnant.material,
+                            remnantCode: remnant.remnantCode,
+                            pipeType: remnant.type,
+                            pipeSize: remnant.size,
+                            pipeThickness: remnant.thickness,
+                            stockLength: remnant.length,
+                            cuts: pattern.cuts,
+                            remnant: pattern.remnant,
+                            utilization: pattern.utilization
+                        });
+                    }
+                }
+                
+                while (remainingDemands.length > 0) {
+                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    if (pattern.cuts.length === 0) break;
+                    
+                    usedNewStock++;
+                    patterns.push({
+                        type: '新料',
+                        material: pattern.cuts[0].material,
+                        pipeType: pattern.cuts[0].type,
+                        pipeSize: pattern.cuts[0].size,
+                        pipeThickness: pattern.cuts[0].thickness,
+                        stockLength: STOCK_LENGTH,
+                        cuts: pattern.cuts,
+                        remnant: pattern.remnant,
+                        utilization: pattern.utilization
+                    });
+                }
+            }
+            
+            // 收集新餘料
+            let newRemnants = [];
+            patterns.forEach(p => {
+                if (p.remnant >= MIN_REMNANT) {
+                    newRemnants.push({
+                        material: p.material,
+                        type: p.pipeType,
+                        size: p.pipeSize,
+                        thickness: p.pipeThickness,
+                        length: p.remnant
+                    });
+                }
+            });
+            
+            // 計算總利用率
+            let totalUsed = demandItems.reduce((sum, d) => sum + d.length, 0);
+            let totalMaterial = (usedNewStock * STOCK_LENGTH) + 
+                               remnantStock.slice(0, usedRemnants).reduce((sum, r) => sum + r.length, 0);
+            let utilization = totalMaterial > 0 ? (totalUsed / totalMaterial * 100) : 0;
+            
+            return {
+                patterns,
+                usedNewStock,
+                usedRemnants,
+                newRemnants,
+                utilization,
+                totalCuts: patterns.reduce((sum, p) => sum + p.cuts.length, 0)
+            };
+        }
+        
+        // FFD 算法（考慮類型、規格和板厚）
+        function fitPiecesWithTypeAndSize(stockLength, demands, requiredMaterial = null, requiredType = null, requiredSize = null, requiredThickness = null) {
+            let cuts = [];
+            let remaining = stockLength;
+            
+            for (let i = 0; i < demands.length; i++) {
+                let demand = demands[i];
+                
+                // 檢查材質、類型、規格和板厚匹配
+                if (requiredMaterial && demand.material !== requiredMaterial) continue;
+                if (requiredType && demand.type !== requiredType) continue;
+                if (requiredSize && demand.size !== requiredSize) continue;
+                if (requiredThickness && demand.thickness !== requiredThickness) continue;
+                
+                // 如果還沒有切割，使用第一個需求的材質、類型、規格和板厚
+                if (cuts.length === 0 || (
+                    demand.material === cuts[0].material &&
+                    demand.type === cuts[0].type && 
+                    demand.size === cuts[0].size && 
+                    demand.thickness === cuts[0].thickness
+                )) {
+                    let needed = demand.length + (cuts.length > 0 ? KERF : 0);
+                    
+                    if (needed <= remaining) {
+                        cuts.push(demand);
+                        remaining -= needed;
+                        demands.splice(i, 1);
+                        i--;
+                    }
+                }
+            }
+            
+            let usedLength = stockLength - remaining;
+            let remnant = remaining;
+            let utilization = stockLength > 0 ? (usedLength / stockLength * 100) : 0;
+            
+            return {cuts, remnant, utilization};
+        }
+        
+        // 計算切割方案
+        function calculate() {
+            if (demands.length === 0) {
+                alert('請先新增需求');
+                return;
+            }
+            
+            const goal = document.getElementById('optimizationGoal').value;
+            const pipeType = document.getElementById('pipeType').value;
+            
+            // 過濾需求和餘料
+            let filteredDemands = demands;
+            let filteredRemnants = remnants;
+            
+            if (pipeType !== 'all') {
+                filteredDemands = demands.filter(d => d.type === pipeType);
+                filteredRemnants = remnants.filter(r => r.type === pipeType);
+                
+                if (filteredDemands.length === 0) {
+                    alert(`沒有 ${PIPE_TYPES[pipeType]} 的需求`);
+                    return;
+                }
+            }
+            
+            currentResult = optimize(filteredDemands, filteredRemnants, goal);
+            displayResult(currentResult);
+            document.getElementById('saveBtn').style.display = 'block';
+        }
+        
+        // 顯示結果
+        function displayResult(result) {
+            const goalText = {
+                'utilization': '材料利用率最高',
+                'new-stock': '優先使用新料',
+                'remnant': '優先使用餘料'
+            };
+            const goal = document.getElementById('optimizationGoal').value;
+            
+            const statsHTML = `
+                <div class="stats-box">
+                    <h3>用料統計</h3>
+                    <div class="stats-item">
+                        <span class="stats-label">優化目標:</span>
+                        <span class="stats-value">${goalText[goal]}</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">使用新料 (6m):</span>
+                        <span class="stats-value">${result.usedNewStock} 根</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">使用餘料:</span>
+                        <span class="stats-value">${result.usedRemnants} 根</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">總切割次數:</span>
+                        <span class="stats-value">${result.totalCuts} 次</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">新產生餘料:</span>
+                        <span class="stats-value">${result.newRemnants.length} 根</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">材料利用率:</span>
+                        <span class="stats-value" style="color: #8B7355; font-size: 20px;">${result.utilization.toFixed(2)}%</span>
+                    </div>
+                </div>
+            `;
+            document.getElementById('statsContainer').innerHTML = statsHTML;
+            
+            // 顏色配置
+            const partNoColors = [
+                '#FF4444', // 紅色
+                '#4169E1', // 藍色
+                '#32CD32', // 綠色
+                '#FF8C00', // 橘色
+                '#9370DB', // 紫色
+                '#00CED1', // 青色
+                '#FF1493', // 粉紅色
+                '#FFD700', // 金色
+                '#00FA9A', // 薄荷綠
+                '#FF6347'  // 番茄紅
+            ];
+            
+            // 分成兩個區域：表格區 和 圖片區
+            let tableHTML = `
+                <div style="margin-bottom: 40px;">
+                    <h3 style="color: #8B7355; margin-bottom: 20px;">📋 切割方案明細</h3>
+                    <div style="overflow-x: auto; overflow-y: visible;">
+                        <table style="width: 100%; min-width: 900px; border-collapse: collapse; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); table-layout: fixed;">
+                            <thead>
+                                <tr style="background: #8B7355; color: white;">
+                                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd; font-weight: 600; width: 100px;">管材編號</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: 600; width: 180px;">料源</th>
+                                <th style="padding: 12px; text-align: left; border: 1px solid #ddd; font-weight: 600;">切割明細</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: 600; width: 110px;">餘料</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: 600; width: 100px;">利用率</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+            
+            // 收集料號顏色映射
+            const allPartNoColors = {};
+            result.patterns.forEach(pattern => {
+                const uniquePartNos = [...new Set(pattern.cuts.map(c => c.partNo).filter(p => p))];
+                uniquePartNos.forEach((partNo, index) => {
+                    if (!allPartNoColors[partNo]) {
+                        allPartNoColors[partNo] = partNoColors[Object.keys(allPartNoColors).length % partNoColors.length];
+                    }
+                });
+            });
+            
+            // 每個方案一行
+            result.patterns.forEach((pattern, i) => {
+                // 管材編號
+                const pipeLabel = `管材${i + 1}`;
+                
+                // 料源（新料6000 / 舊料SS41-001 1020）
+                const typeText = pattern.type === '新料' ? '新料' : '舊料';
+                const materialText = pattern.material || '-';
+                const remnantCodeText = pattern.remnantCode ? ` ${pattern.remnantCode}` : '';
+                const stockLengthText = pattern.stockLength;
+                const sizeText = `${PIPE_TYPES[pattern.pipeType]} ${pattern.pipeSize} t=${pattern.pipeThickness}mm`;
+                
+                // 切割明細
+                const cutGroups = {};
+                pattern.cuts.forEach(cut => {
+                    const key = `${cut.type}_${cut.size}_${cut.thickness}_${cut.length}_${cut.partNo || ''}`;
+                    if (!cutGroups[key]) {
+                        cutGroups[key] = {
+                            type: cut.type,
+                            size: cut.size,
+                            thickness: cut.thickness,
+                            length: cut.length,
+                            partNo: cut.partNo,
+                            count: 0
+                        };
+                    }
+                    cutGroups[key].count++;
+                });
+                
+                let cutDetails = '';
+                Object.values(cutGroups).forEach(group => {
+                    const sizeStr = group.size.replace('×', '*').replace('Ø', '');
+                    const specText = `${group.thickness}t*${sizeStr}*${group.length}*${group.count}p`;
+                    const partNoDisplay = group.partNo ? 
+                        ` <span style="color: ${allPartNoColors[group.partNo]}; font-weight: 700;">[${group.partNo}]</span>` : 
+                        '';
+                    cutDetails += `<div style="padding: 3px 0; font-weight: 600; color: #4A4A4A;">${specText}${partNoDisplay}</div>`;
+                });
+                
+                // 餘料
+                const isKeep = pattern.remnant >= MIN_REMNANT;
+                const badge = isKeep ? 
+                    `<span class="remnant-badge remnant-keep" style="margin-left: 8px; font-size: 11px;">保留</span>` : 
+                    `<span class="remnant-badge remnant-discard" style="margin-left: 8px; font-size: 11px;">丟棄</span>`;
+                
+                // 表格行
+                const rowBg = i % 2 === 0 ? '#FFFFFF' : '#FAFAF9';
+                tableHTML += `
+                    <tr style="background: ${rowBg};">
+                        <td style="padding: 12px; border: 1px solid #ddd; font-weight: 700; color: #8B7355; font-size: 15px;">
+                            ${pipeLabel}
+                        </td>
+                        <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">
+                            <div style="font-weight: 700; font-size: 16px; color: ${pattern.type === '新料' ? '#52C41A' : '#1890FF'}; margin-bottom: 3px;">
+                                ${typeText}${remnantCodeText} ${stockLengthText}mm
+                            </div>
+                            <div style="color: #8A8A8A; font-size: 11px; margin-bottom: 3px;">
+                                ${materialText}
+                            </div>
+                            <div style="color: #6A6A6A; font-size: 12px;">
+                                ${sizeText}
+                            </div>
+                        </td>
+                        <td style="padding: 12px; border: 1px solid #ddd; text-align: left; vertical-align: top;">
+                            ${cutDetails}
+                        </td>
+                        <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">
+                            <div style="font-weight: 700; font-size: 16px; color: ${isKeep ? '#52C41A' : '#E74C3C'};">
+                                ${pattern.remnant.toFixed(1)}mm
+                            </div>
+                            ${badge}
+                        </td>
+                        <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">
+                            <span style="font-weight: 700; font-size: 18px; color: #8B7355;">
+                                ${pattern.utilization.toFixed(2)}%
+                            </span>
+                        </td>
+                    </tr>`;
+            });
+            
+            tableHTML += `
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+            
+            // ========== 圖片區 ==========
+            let visualHTML = '<div><h3 style="color: #8B7355; margin: 40px 0 20px 0;">📊 視覺化示意圖</h3>';
+            
+            result.patterns.forEach((pattern, i) => {
+                const visualSVG = createSVGVisualization(pattern);
+                visualHTML += `
+                    <div style="margin-bottom: 30px;">
+                        <h5 style="color: #6A6A6A; margin-bottom: 10px; font-size: 14px; font-weight: 600;">
+                            管材${i + 1} - ${PIPE_TYPES[pattern.pipeType]} ${pattern.pipeSize} t=${pattern.pipeThickness}mm
+                        </h5>
+                        <div class="cut-visual">
+                            ${visualSVG}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            visualHTML += '</div>';
+            
+            document.getElementById('resultContainer').innerHTML = tableHTML + visualHTML;
+        }
+        // 創建SVG視覺化
+        function createSVGVisualization(pattern) {
+            const svgWidth = 600;
+            const svgHeight = 110; // 增加高度
+            const barHeight = 40;
+            const barY = 45; // 往下移動更多，為料號留更多空間
+            const scale = svgWidth / pattern.stockLength;
+            
+            // 為不同料號分配顏色
+            const partNoColors = [
+                '#FF4444', // 紅色
+                '#4169E1', // 藍色
+                '#32CD32', // 綠色
+                '#FF8C00', // 橘色
+                '#9370DB', // 紫色
+                '#00CED1', // 青色
+                '#FF1493', // 粉紅色
+                '#FFD700', // 金色
+                '#00FA9A', // 薄荷綠
+                '#FF6347'  // 番茄紅
+            ];
+            
+            // 收集所有不同的料號
+            const uniquePartNos = [...new Set(pattern.cuts.map(c => c.partNo).filter(p => p))];
+            const partNoColorMap = {};
+            uniquePartNos.forEach((partNo, index) => {
+                partNoColorMap[partNo] = partNoColors[index % partNoColors.length];
+            });
+            
+            let svgContent = `<svg class="visual-svg" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg">`;
+            
+            // 繪製切割段
+            let position = 0;
+            pattern.cuts.forEach((cut, idx) => {
+                const x = position * scale;
+                const width = cut.length * scale;
+                
+                svgContent += `
+                    <rect class="cut-segment" 
+                          x="${x}" y="${barY}" 
+                          width="${width}" height="${barHeight}" 
+                          rx="2"/>
+                `;
+                
+                // 顯示料號（在長度上方）- 使用對應的顏色
+                if (cut.partNo) {
+                    const partNoColor = partNoColorMap[cut.partNo];
+                    svgContent += `
+                        <text class="part-no-text" 
+                              x="${x + width/2}" y="${barY - 18}" 
+                              text-anchor="middle"
+                              fill="${partNoColor}"
+                              font-size="12"
+                              font-weight="900">
+                            ${cut.partNo}
+                        </text>
+                    `;
+                }
+                
+                // 顯示長度（在咖啡色方塊中央）
+                svgContent += `
+                    <text class="measurement-text" 
+                          x="${x + width/2}" y="${barY + barHeight/2 + 4}" 
+                          text-anchor="middle"
+                          fill="#FFFFFF"
+                          font-size="12"
+                          font-weight="600">
+                        ${cut.length}mm
+                    </text>
+                `;
+                
+                position += cut.length;
+                
+                // 添加切割線
+                if (idx < pattern.cuts.length - 1) {
+                    const lineX = position * scale;
+                    svgContent += `
+                        <line class="measurement-line" 
+                              x1="${lineX}" y1="${barY - 5}" 
+                              x2="${lineX}" y2="${barY + barHeight + 5}"/>
+                    `;
+                    position += KERF;
+                }
+            });
+            
+            // 繪製餘料
+            if (pattern.remnant >= MIN_REMNANT) {
+                const remnantX = position * scale;
+                const remnantWidth = pattern.remnant * scale;
+                svgContent += `
+                    <rect class="remnant-segment" 
+                          x="${remnantX}" y="${barY}" 
+                          width="${remnantWidth}" height="${barHeight}" 
+                          rx="2"/>
+                    <text class="measurement-text" 
+                          x="${remnantX + remnantWidth/2}" y="${barY + barHeight/2 + 4}" 
+                          text-anchor="middle" 
+                          fill="#8A8A8A">
+                        ${pattern.remnant}mm
+                    </text>
+                `;
+            }
+            
+            svgContent += '</svg>';
+            return svgContent;
+        }
+        // 保存結果 - 顯示確認對話框
+        function saveResult() {
+            if (!currentResult) {
+                alert('請先計算切割方案');
+                return;
+            }
+            
+            if (currentResult.newRemnants.length === 0) {
+                // 沒有餘料，直接完成
+                finalizeSave([]);
+                return;
+            }
+            
+            // 顯示餘料確認對話框
+            showRemnantModal();
+        }
+        
+        // 顯示餘料確認對話框
+        function showRemnantModal() {
+            const modal = document.getElementById('remnantModal');
+            var previewList = document.getElementById('remnantPreviewList');
+            
+            // 整理餘料資訊
+            const remnantMap = {};
+            currentResult.newRemnants.forEach(item => {
+                const key = `${item.type}_${item.size}_${item.thickness}_${item.length}`;
+                if (remnantMap[key]) {
+                    remnantMap[key].qty++;
+                } else {
+                    remnantMap[key] = {
+                        type: item.type,
+                        size: item.size,
+                        thickness: item.thickness,
+                        length: item.length,
+                        qty: 1
+                    };
+                }
+            });
+            
+            // 生成預覽列表
+            let html = '';
+            let index = 0;
+            for (let key in remnantMap) {
+                const r = remnantMap[key];
+                const remnantThicknessDisplay = NO_THICKNESS_TYPES.includes(r.type) ? '(實心)' : `t=${r.thickness}mm`;
+                html += `
+                    <div class="remnant-preview-item">
+                        <div class="remnant-info">
+                            <div style="margin-bottom: 8px;">
+                                <span class="type-badge">${PIPE_TYPES[r.type]}</span>
+                                <span class="type-badge">${r.size}</span>
+                                <span class="type-badge">${remnantThicknessDisplay}</span>
+                            </div>
+                            <div style="color: #6A6A6A; font-size: 13px; margin-bottom: 8px;">
+                                長度: <strong>${r.length}mm</strong> × 數量: <strong>${r.qty}支</strong>
+                            </div>
+                            <div style="font-size: 12px; margin-bottom: 6px;">
+                                <label style="color: #4A4A4A; margin-right: 5px;">材質:</label>
+                                <select id="material_${index}" data-key="${key}" style="padding: 4px; border: 1px solid #E8E6E3; border-radius: 3px; font-size: 12px;">
+                                    <option value="01">01 (SS41-碳鋼)</option>
+                                    <option value="02">02 (SUS-不鏽鋼)</option>
+                                    <option value="03">03 (PG-鍍鋅)</option>
+                                </select>
+                            </div>
+                            <div style="font-size: 12px;">
+                                <label style="color: #4A4A4A; margin-right: 5px;">地點:</label>
+                                <select id="location_${index}" data-key="${key}" style="padding: 4px; border: 1px solid #E8E6E3; border-radius: 3px; font-size: 12px;">
+                                    <option value="貨櫃">貨櫃</option>
+                                    <option value="折床上方">折床上方</option>
+                                    <option value="鋸床管料區">鋸床管料區</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="remnant-checkbox">
+                            <input type="checkbox" 
+                                   id="remnant_${index}" 
+                                   data-key="${key}" 
+                                   checked>
+                        </div>
+                    </div>
+                `;
+                index++;
+            }
+            
+            previewList.innerHTML = html;
+            modal.classList.add('active');
+        }
+        
+        // 關閉對話框
+        function closeRemnantModal() {
+            const modal = document.getElementById('remnantModal');
+            modal.classList.remove('active');
+        }
+        
+        // 全選餘料
+        function selectAllRemnants() {
+            const checkboxes = document.querySelectorAll('#remnantPreviewList input[type="checkbox"]');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            
+            checkboxes.forEach(cb => {
+                cb.checked = !allChecked;
+            });
+        }
+        
+        // 確認保存選中的餘料
+        function confirmSaveRemnants() {
+            const checkboxes = document.querySelectorAll('#remnantPreviewList input[type="checkbox"]:checked');
+            const selectedKeys = Array.from(checkboxes).map(cb => cb.dataset.key);
+            
+            if (selectedKeys.length === 0) {
+                if (!confirm('未選擇任何餘料，確定要繼續嗎？所有餘料將被丟棄。')) {
+                    return;
+                }
+            }
+            
+            // 整理選中的餘料並讀取材質和地點
+            const remnantMap = {};
+            const materialSelects = document.querySelectorAll('[id^="material_"]');
+            const locationSelects = document.querySelectorAll('[id^="location_"]');
+            const materialMap = {};
+            const locationMap = {};
+            
+            materialSelects.forEach(select => {
+                const key = select.dataset.key;
+                materialMap[key] = select.value;
+            });
+            
+            locationSelects.forEach(select => {
+                const key = select.dataset.key;
+                locationMap[key] = select.value;
+            });
+            
+            currentResult.newRemnants.forEach(item => {
+                const key = `${item.type}_${item.size}_${item.thickness}_${item.length}`;
+                if (selectedKeys.includes(key)) {
+                    if (remnantMap[key]) {
+                        remnantMap[key].qty++;
+                    } else {
+                        remnantMap[key] = {
+                            material: materialMap[key] || '01',
+                            location: locationMap[key] || '貨櫃',
+                            type: item.type,
+                            size: item.size,
+                            thickness: item.thickness,
+                            length: item.length,
+                            qty: 1
+                        };
+                    }
+                }
+            });
+            
+            const selectedRemnants = Object.values(remnantMap);
+            
+            closeRemnantModal();
+            finalizeSave(selectedRemnants);
+        }
+        
+        // 完成保存
+        function finalizeSave(selectedRemnants) {
+            // 清空舊餘料
+            remnants = [];
+            
+            // 添加選中的餘料並分配編號
+            selectedRemnants.forEach(r => {
+                const id = getNextRemnantId(r.material);
+                const remnantCode = formatRemnantId(r.material, id);
+                remnants.push({
+                    id: id,
+                    material: r.material,
+                    remnantCode: remnantCode,
+                    type: r.type,
+                    size: r.size,
+                    thickness: r.thickness,
+                    location: r.location,
+                    length: r.length,
+                    qty: r.qty
+                });
+            });
+            
+            remnants.sort((a, b) => {
+                if (a.material !== b.material) return a.material.localeCompare(b.material);
+                return a.id - b.id;
+            });
+            
+            saveToStorage();
+            renderRemnants();
+            
+            // 清空需求
+            demands = [];
+            saveToStorage();
+            renderDemands();
+            
+            const keptCount = selectedRemnants.length;
+            const totalCount = currentResult.newRemnants.length;
+            const discardedCount = totalCount - selectedRemnants.reduce((sum, r) => sum + r.qty, 0);
+            
+            if (keptCount > 0) {
+                alert(`方案已保存！
+保留餘料: ${keptCount} 種 (共 ${selectedRemnants.reduce((sum, r) => sum + r.qty, 0)} 支)
+丟棄餘料: ${discardedCount} 支`);
+            } else {
+                alert('方案已保存！所有餘料已丟棄。');
+            }
+        }
+
+        
+        // 綁定批次解析按鈕事件（在頁面載入後）
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('✅ 批次解析按鈕事件已綁定');
+            
+            // 監聽表格滾動，滑動後隱藏提示
+            function setupScrollHideHint() {
+                // 需求列表滾動監聽
+                const demandTable = document.querySelector('#demandTable');
+                if (demandTable) {
+                    const demandScrollContainer = demandTable.parentElement;
+                    const demandHintArrow = document.getElementById('demandScrollHint');
+                    
+                    if (demandScrollContainer && demandHintArrow) {
+                        demandScrollContainer.addEventListener('scroll', function() {
+                            if (this.scrollLeft > 10) {
+                                demandHintArrow.style.opacity = '0';
+                                demandHintArrow.style.transition = 'opacity 0.3s ease-out';
+                                setTimeout(function() {
+                                    demandHintArrow.style.display = 'none';
+                                }, 300);
+                            }
+                        }, { passive: true });
+                    }
+                }
+                
+                // 餘料列表已改為卡片式，不需要滾動提示
+            }
+            
+            // 延遲執行以確保DOM完全載入
+            setTimeout(setupScrollHideHint, 500);
+        });
+        
+        // 初始化
+        loadFromStorage();
+        updateSizeOptions('demand');
+        updateSizeOptions('remnant');
+        renderDemands();
+        renderRemnants();
+    </script>
+</body>
+</html>
