@@ -2883,17 +2883,18 @@ v1.8
             `).join('');
         }
         
-        // 流水號管理（以 remnantCode 字串為依據，與 finalizeSave/拆分邏輯一致）
-        function getNextRemnantCode(material) {
+        // 流水號管理（以 remnantCode 字串為依據，優先填補空號）
+        // extraUsedCodes：同一批次中已分配但還沒寫入 remnants 的編號（避免批次內撞號）
+        function getNextRemnantCode(material, extraUsedCodes) {
             const prefix = material;
-            let maxNum = 0;
+            const used = new Set();
             remnants.forEach(r => {
-                if (r.remnantCode && r.remnantCode.startsWith(prefix)) {
-                    const num = parseInt(r.remnantCode.substring(prefix.length));
-                    if (!isNaN(num) && num > maxNum) maxNum = num;
-                }
+                if (r.remnantCode && r.remnantCode.startsWith(prefix)) used.add(r.remnantCode);
             });
-            return prefix + (maxNum + 1).toString().padStart(3, '0');
+            if (extraUsedCodes) extraUsedCodes.forEach(c => used.add(c));
+            let n = 1;
+            while (used.has(prefix + String(n).padStart(3, '0'))) n++;
+            return prefix + String(n).padStart(3, '0');
         }
         
         // 新增餘料
@@ -3612,34 +3613,9 @@ v1.8
             input.onblur = saveChanges;
         }
         
-        // 產生新的餘料編號
-        // 產生新的餘料編號（確保不重複）
+        // 產生新的餘料編號（拆分時用，與 getNextRemnantCode 共用填空號邏輯）
         function generateNewRemnantCode(material) {
-            const prefix = material; // 01, 02, 03
-            
-            // 收集所有已存在的編號（包括剛剛新增但還沒存到 Firebase 的）
-            const existingNums = new Set();
-            
-            remnants.forEach(r => {
-                if (r.remnantCode && r.remnantCode.startsWith(prefix)) {
-                    const num = parseInt(r.remnantCode.substring(2));
-                    if (!isNaN(num)) {
-                        existingNums.add(num);
-                    }
-                }
-            });
-            
-            // 找出最小的可用編號
-            let newNum = 1;
-            while (existingNums.has(newNum)) {
-                newNum++;
-            }
-            
-            // 或者用最大編號 + 1（確保遞增）
-            const maxNum = Math.max(0, ...existingNums);
-            newNum = maxNum + 1;
-            
-            return prefix + newNum.toString().padStart(3, '0');
+            return getNextRemnantCode(material);
         }
         
         // 顯示拆分通知
@@ -4482,23 +4458,12 @@ v1.8
             // 追蹤已處理的餘料（避免同一筆被處理兩次）
             const processedRemnants = new Set();
             
-            // 產生不重複的編號
+            // 產生不重複的編號（填空號優先，批次內用 usedCodes 防撞）
             function getNextCode(material) {
-                const prefix = material;
-                let maxNum = 0;
-                
-                usedCodes.forEach(code => {
-                    if (code.startsWith(prefix)) {
-                        const num = parseInt(code.substring(2));
-                        if (!isNaN(num) && num > maxNum) {
-                            maxNum = num;
-                        }
-                    }
-                });
-                
-                const newNum = maxNum + 1;
-                const newCode = prefix + newNum.toString().padStart(3, '0');
-                usedCodes.add(newCode); // 立即標記為已使用
+                // usedCodes 已包含 remnants 的全部編號 + 本批次已分配的，直接傳入即可
+                // 注意：getNextRemnantCode 內部會再讀一次 remnants，所以實質依據是兩者聯集
+                const newCode = getNextRemnantCode(material, usedCodes);
+                usedCodes.add(newCode);
                 console.log('🆕 產生新編號:', newCode, '(目前已使用:', Array.from(usedCodes).join(','), ')');
                 return newCode;
             }
