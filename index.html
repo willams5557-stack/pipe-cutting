@@ -2883,27 +2883,17 @@ v1.8
             `).join('');
         }
         
-        // 流水號管理
-        function getNextRemnantId(material) {
-            // 獲取該材質的所有現有編號
-            const existingIds = remnants
-                .filter(r => r.material === material)
-                .map(r => r.id)
-                .sort((a, b) => a - b);
-            
-            // 找最小的空缺編號
-            for (let i = 1; i <= existingIds.length + 1; i++) {
-                if (!existingIds.includes(i)) {
-                    return i;
+        // 流水號管理（以 remnantCode 字串為依據，與 finalizeSave/拆分邏輯一致）
+        function getNextRemnantCode(material) {
+            const prefix = material;
+            let maxNum = 0;
+            remnants.forEach(r => {
+                if (r.remnantCode && r.remnantCode.startsWith(prefix)) {
+                    const num = parseInt(r.remnantCode.substring(prefix.length));
+                    if (!isNaN(num) && num > maxNum) maxNum = num;
                 }
-            }
-            return 1;
-        }
-        
-        function formatRemnantId(material, id) {
-            // 格式：01001, 02003, 03015
-            // 材質2位 + 流水號3位
-            return `${material}${String(id).padStart(3, '0')}`;
+            });
+            return prefix + (maxNum + 1).toString().padStart(3, '0');
         }
         
         // 新增餘料
@@ -2936,28 +2926,28 @@ v1.8
                 return;
             }
             
-            // 獲取流水編號
-            const id = getNextRemnantId(material);
-            const remnantCode = formatRemnantId(material, id);
-            
+            // 獲取流水編號（以 remnantCode 為唯一依據，避免與切割方案/拆分產生的編號撞號）
+            const remnantCode = getNextRemnantCode(material);
+            const id = Date.now() + Math.floor(Math.random() * 10000);
+
             // 新增餘料
             const thicknessValue = needsThickness ? parseFloat(thickness) : 0;
             remnants.push({
                 id: id,
                 material: material,
                 remnantCode: remnantCode,
-                type, 
-                size, 
+                type,
+                size,
                 thickness: thicknessValue,
                 location,
-                length, 
+                length,
                 qty
             });
-            
+
             // 排序：按材質、編號
             remnants.sort((a, b) => {
                 if (a.material !== b.material) return a.material.localeCompare(b.material);
-                return a.id - b.id;
+                return a.remnantCode.localeCompare(b.remnantCode);
             });
             
             saveToStorage();
