@@ -2285,7 +2285,10 @@ v1.8
                         content += '<div style="padding:12px 15px;background:' + bgColor + ';border-bottom:1px solid #EEE;display:flex;justify-content:space-between;align-items:center;">';
                         content += '<div>';
                         content += '<div style="font-weight:600;color:' + (isManual ? '#10B981' : '#333') + ';">' + displayDate + '</div>';
-                        content += '<div style="font-size:12px;color:#888;">' + backup.remnantCount + ' 筆餘料</div>';
+                        var stats = computeRemnantStats(backup.remnants);
+                        var countLabel = (stats.total || backup.remnantCount) + ' 筆餘料';
+                        if (stats.gaps > 0) countLabel += ' (' + stats.gaps + ' 個空號)';
+                        content += '<div style="font-size:12px;color:#888;">' + countLabel + '</div>';
                         content += '</div>';
                         content += '<div style="display:flex;gap:6px;">';
                         content += '<button onclick="restoreFromBackup(\'' + backup.date + '\');closeBackupModal();" style="background:#8B7355;color:white;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;">還原</button>';
@@ -2896,7 +2899,30 @@ v1.8
             while (used.has(prefix + String(n).padStart(3, '0'))) n++;
             return prefix + String(n).padStart(3, '0');
         }
-        
+
+        // 計算餘料統計：總筆數、各材質最大編號與空號數
+        // 回傳 { total, gaps }；用於 UI 解釋 count 與最大編號為何不一致
+        function computeRemnantStats(remnantsArr) {
+            if (!remnantsArr || remnantsArr.length === 0) return { total: 0, gaps: 0 };
+            const byMaterial = {};
+            remnantsArr.forEach(r => {
+                if (!r.remnantCode || r.remnantCode.length < 3) return;
+                const prefix = r.remnantCode.substring(0, 2);
+                const num = parseInt(r.remnantCode.substring(2));
+                if (isNaN(num)) return;
+                if (!byMaterial[prefix]) byMaterial[prefix] = { count: 0, max: 0 };
+                byMaterial[prefix].count++;
+                if (num > byMaterial[prefix].max) byMaterial[prefix].max = num;
+            });
+            let total = 0, gaps = 0;
+            Object.values(byMaterial).forEach(m => {
+                total += m.count;
+                gaps += Math.max(0, m.max - m.count);
+            });
+            return { total, gaps };
+        }
+
+
         // 新增餘料
         function addRemnant() {
             const material = document.getElementById('remnantMaterial').value;
