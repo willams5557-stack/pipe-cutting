@@ -1615,9 +1615,29 @@ v1.8
 
     <script>
         // 系統參數
-        const STOCK_LENGTH = 5980; // 6000-20mm安全餘量
+        const STOCK_LENGTH = 5980; // 6000-20mm安全餘量（一般管材新料：扣 20mm 切割預留）
+        const STOCK_LENGTH_ROD = 7200; // 圓棒新料：用足 7200mm，不扣切割預留
         let KERF = 1; // 預設為鋸片切割
         const MIN_REMNANT = 100; // 100mm最小餘料
+
+        // 依管材類型回傳新料長度（圓棒 7200 用足，其餘 5980 扣 20mm 預留）
+        function getStockLength(type) {
+            return type === 'rod' ? STOCK_LENGTH_ROD : STOCK_LENGTH;
+        }
+
+        // 依管材類型回傳輸入長度上限（用於 HTML max 屬性與 JS 驗證）
+        function getMaxInputLength(type) {
+            return getStockLength(type);
+        }
+
+        // 同步輸入框的 max 屬性（在管材類型變更時呼叫）
+        function syncLengthMaxAttr(prefix) {
+            const typeEl = document.getElementById(prefix + 'Type');
+            const lenEl = document.getElementById(prefix + 'Length');
+            if (typeEl && lenEl) {
+                lenEl.max = getMaxInputLength(typeEl.value);
+            }
+        }
         
         // 更新切縫值
         function updateKerf() {
@@ -1762,8 +1782,11 @@ v1.8
                     thicknessGroup.style.display = 'block';
                 }
             }
+
+            // 同步長度上限（圓棒 7200，其餘 5980）
+            syncLengthMaxAttr(prefix);
         }
-        
+
         // 處理規格選擇變更
         function handleSizePresetChange(prefix) {
             const presetSelect = document.getElementById(`${prefix}SizePreset`);
@@ -2467,11 +2490,12 @@ v1.8
                 return;
             }
             
-            if (length > STOCK_LENGTH) {
-                alert(`長度不能超過原料長度 ${STOCK_LENGTH}mm`);
+            const maxLen = getMaxInputLength(type);
+            if (length > maxLen) {
+                alert(`長度不能超過原料長度 ${maxLen}mm`);
                 return;
             }
-            
+
             if (length < 10) {
                 alert('長度至少要 10mm');
                 return;
@@ -3779,9 +3803,11 @@ v1.8
             if (goal === 'new-stock') {
                 // 優先使用新料
                 while (remainingDemands.length > 0) {
-                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    // 依首支需求的管材類型決定新料長度（圓棒 7200，其餘 5980）
+                    const stockLen = getStockLength(remainingDemands[0].type);
+                    let pattern = fitPiecesWithTypeAndSize(stockLen, remainingDemands);
                     if (pattern.cuts.length === 0) break;
-                    
+
                     usedNewStock++;
                     patterns.push({
                         type: '新料',
@@ -3789,7 +3815,7 @@ v1.8
                         pipeType: pattern.cuts[0].type,
                         pipeSize: pattern.cuts[0].size,
                         pipeThickness: pattern.cuts[0].thickness,
-                        stockLength: STOCK_LENGTH,
+                        stockLength: stockLen,
                         cuts: pattern.cuts,
                         remnant: pattern.remnant,
                         utilization: pattern.utilization
@@ -3840,9 +3866,10 @@ v1.8
                 
                 // 再使用新料
                 while (remainingDemands.length > 0) {
-                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    const stockLen = getStockLength(remainingDemands[0].type);
+                    let pattern = fitPiecesWithTypeAndSize(stockLen, remainingDemands);
                     if (pattern.cuts.length === 0) break;
-                    
+
                     usedNewStock++;
                     patterns.push({
                         type: '新料',
@@ -3850,7 +3877,7 @@ v1.8
                         pipeType: pattern.cuts[0].type,
                         pipeSize: pattern.cuts[0].size,
                         pipeThickness: pattern.cuts[0].thickness,
-                        stockLength: STOCK_LENGTH,
+                        stockLength: stockLen,
                         cuts: pattern.cuts,
                         remnant: pattern.remnant,
                         utilization: pattern.utilization
@@ -3877,11 +3904,12 @@ v1.8
                         });
                     }
                 }
-                
+
                 while (remainingDemands.length > 0) {
-                    let pattern = fitPiecesWithTypeAndSize(STOCK_LENGTH, remainingDemands);
+                    const stockLen = getStockLength(remainingDemands[0].type);
+                    let pattern = fitPiecesWithTypeAndSize(stockLen, remainingDemands);
                     if (pattern.cuts.length === 0) break;
-                    
+
                     usedNewStock++;
                     patterns.push({
                         type: '新料',
@@ -3889,7 +3917,7 @@ v1.8
                         pipeType: pattern.cuts[0].type,
                         pipeSize: pattern.cuts[0].size,
                         pipeThickness: pattern.cuts[0].thickness,
-                        stockLength: STOCK_LENGTH,
+                        stockLength: stockLen,
                         cuts: pattern.cuts,
                         remnant: pattern.remnant,
                         utilization: pattern.utilization
@@ -3911,10 +3939,9 @@ v1.8
                 }
             });
             
-            // 計算總利用率
+            // 計算總利用率（依各 pattern 實際使用的 stockLength 總和，正確處理混合管材類型）
             let totalUsed = demandItems.reduce((sum, d) => sum + d.length, 0);
-            let totalMaterial = (usedNewStock * STOCK_LENGTH) + 
-                               remnantStock.slice(0, usedRemnants).reduce((sum, r) => sum + r.length, 0);
+            let totalMaterial = patterns.reduce((sum, p) => sum + p.stockLength, 0);
             let utilization = totalMaterial > 0 ? (totalUsed / totalMaterial * 100) : 0;
             
             return {
