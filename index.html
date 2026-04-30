@@ -2927,7 +2927,10 @@ v1.8
         // 計算餘料統計：總筆數、各材質最大編號與空號數
         // 回傳 { total, gaps }；用於 UI 解釋 count 與最大編號為何不一致
         function computeRemnantStats(remnantsArr) {
-            if (!remnantsArr || remnantsArr.length === 0) return { total: 0, gaps: 0 };
+            if (!remnantsArr) return { total: 0, gaps: 0 };
+            // Firebase 把陣列存回時可能變成物件，需要 normalize
+            if (!Array.isArray(remnantsArr)) remnantsArr = Object.values(remnantsArr);
+            if (remnantsArr.length === 0) return { total: 0, gaps: 0 };
             const byMaterial = {};
             remnantsArr.forEach(r => {
                 if (!r.remnantCode || r.remnantCode.length < 3) return;
