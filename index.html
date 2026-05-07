@@ -4505,13 +4505,15 @@ v1.8
             });
             
             const selectedRemnants = Object.values(remnantMap);
-            
+            const selectedKeysSet = new Set(selectedKeys);
+
             closeRemnantModal();
-            finalizeSave(selectedRemnants);
+            finalizeSave(selectedRemnants, selectedKeysSet);
         }
-        
+
         // 完成保存
-        function finalizeSave(selectedRemnants) {
+        function finalizeSave(selectedRemnants, selectedKeysSet) {
+            if (!selectedKeysSet) selectedKeysSet = new Set();
             // 用來追蹤這次操作中已分配的編號
             const usedCodes = new Set();
             remnants.forEach(r => {
@@ -4544,9 +4546,13 @@ v1.8
                     const idx = remnants.findIndex(r => r.remnantCode === pattern.remnantCode);
                     if (idx !== -1) {
                         const originalRemnant = remnants[idx];
-                        
-                        if (pattern.remnant >= MIN_REMNANT) {
-                            // 有剩餘，更新長度（減少一支的數量並更新長度）
+
+                        // 使用者是否勾選保留此新長度的餘料
+                        const remnantKey = `${originalRemnant.type}_${originalRemnant.size}_${originalRemnant.thickness}_${pattern.remnant}`;
+                        const userKept = selectedKeysSet.has(remnantKey);
+
+                        if (pattern.remnant >= MIN_REMNANT && userKept) {
+                            // 有剩餘且使用者要保留，更新長度（減少一支的數量並更新長度）
                             if (originalRemnant.qty > 1) {
                                 // 多支：減少數量，保留原長度
                                 remnants[idx].qty -= 1;
@@ -4569,7 +4575,7 @@ v1.8
                                 remnants[idx].length = pattern.remnant;
                             }
                         } else {
-                            // 用完了，減少數量或刪除
+                            // 用完了 或 使用者取消勾選此新長度餘料 → 視為丟棄
                             if (originalRemnant.qty > 1) {
                                 remnants[idx].qty -= 1;
                             } else {
