@@ -3009,23 +3009,24 @@ v1.8
                 return;
             }
             
-            // 獲取流水編號（以 remnantCode 為唯一依據，避免與切割方案/拆分產生的編號撞號）
-            const remnantCode = getNextRemnantCode(material);
-            const id = Date.now() + Math.floor(Math.random() * 10000);
-
-            // 新增餘料
+            // v1.3.0 一支一碼：依數量展開成各自獨立的紀錄，每支一個編號、一張 QR
             const thicknessValue = needsThickness ? parseFloat(thickness) : 0;
-            remnants.push({
-                id: id,
-                material: material,
-                remnantCode: remnantCode,
-                type,
-                size,
-                thickness: thicknessValue,
-                location,
-                length,
-                qty
-            });
+            const newCodes = [];
+            for (let i = 0; i < qty; i++) {
+                const code = getNextRemnantCode(material);
+                newCodes.push(code);
+                remnants.push({
+                    id: Date.now() + i * 1000 + Math.floor(Math.random() * 1000),
+                    material: material,
+                    remnantCode: code,
+                    type,
+                    size,
+                    thickness: thicknessValue,
+                    location,
+                    length,
+                    qty: 1
+                });
+            }
 
             // 排序：按材質、編號
             remnants.sort((a, b) => {
@@ -3036,7 +3037,13 @@ v1.8
             saveToStorage();
             renderRemnants();
             const thicknessText = needsThickness ? ` t=${thickness}mm` : ' (實心)';
-            alert(`已新增餘料 ${remnantCode}\n${PIPE_TYPES[type]} ${size}${thicknessText} ${length}mm × ${qty}支\n存放地點：${location}`);
+            const codeText = newCodes.length === 1
+                ? newCodes[0]
+                : newCodes[0] + ' ~ ' + newCodes[newCodes.length - 1] + '（共 ' + newCodes.length + ' 筆）';
+            alert('已新增 ' + newCodes.length + ' 支，各自一個編號\n'
+                + codeText + '\n'
+                + PIPE_TYPES[type] + ' ' + size + thicknessText + ' ' + length + 'mm'
+                + '\n存放地點：' + location);
             
             // 清空輸入
             document.getElementById('remnantSizePreset').value = '';
