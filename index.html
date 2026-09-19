@@ -1,8 +1,28 @@
 <!DOCTYPE html>
 <!--
 ================================================================================
-管材切割優化系統 v1.9
+管材切割優化系統 v2.0
 ================================================================================
+
+v2.0  【一支一碼 + QR 追蹤 + 發加工】
+  編號
+  - 編號改為永不回收（原本填補空號，會讓退役編號重新發給別根管子，
+    貼紙就指到錯的料；正式資料裡已因此撞號 8 組，已修正改號）
+  - 發號改用 Firebase transaction 原子預約，杜絕兩台裝置同時算出同一號
+  庫存
+  - 新增餘料依數量展開成逐支獨立紀錄，每支一個編號、一張 QR
+  - 舊的群組紀錄一次性展開（68 筆 → 89 筆）
+  - 列表數量欄改顯示同規格「第幾/共幾」，另加「依規格」檢視
+  QR
+  - 逐支或勾選多支標記待印，列印 No.90221 標籤紙（65x40mm，21 張/頁）
+  - 貼紙印 QR + 編號 + 規格 + 長度（長度最大，貼前肉眼可核對）
+  - 手機掃 ?code= 跳出資訊卡，長度最大呈現，可直接改長度／改地點
+  發加工
+  - 獨立分頁：發出、加工中、結案、取消加工
+  - 加工中的料自動排除於切割演算法之外
+  - 紀錄留到結案才刪，所以料在外面時 QR 仍掃得到，帳實不符會當場浮現
+  - 結案後寫入 processHistory，是那筆庫存唯一留下來的紀錄
+  - 手機版為唯讀，發出與結案在桌面版操作
 
 版本特色：【餘料管理：獨立分頁模式】
 
@@ -63,7 +83,7 @@ v1.8
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>管材切割優化系統 v1.2.7 手機版 (5980mm, 100mm)</title>
+    <title>管材切割優化系統 v2.0 手機版 (5980mm, 100mm)</title>
     <!-- PWA 支援 -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -1203,7 +1223,7 @@ v1.8
 <body>
     <div class="container">
         <div class="header">
-            <h1>管材切割優化系統 <span style="font-size: 0.6em; color: #D4AF37;">v1.2.7 手機版</span></h1>
+            <h1>管材切割優化系統 <span style="font-size: 0.6em; color: #D4AF37;">v2.0 手機版</span></h1>
             <div id="syncStatus" style="font-size: 11px; margin-top: 3px; color: #10B981;">🟢 雲端連線中...</div>
             <div style="text-align: center; color: #6A6A6A; font-size: 13px; margin-top: 5px;">
                 3D幾何智能解析 | 尺寸對比檢查 | 自動優化切割
