@@ -1945,6 +1945,7 @@ v1.8
                         
                         if (useBackup) {
                             remnants = remoteRemnants;
+                    if (typeof tryShowScanCard === "function") tryShowScanCard();
                             demands = remoteDemands;
                             localStorage.setItem('remnants_v5', JSON.stringify(remnants));
                             localStorage.setItem('demands_v5', JSON.stringify(demands));
@@ -1961,6 +1962,7 @@ v1.8
                     // 使用 Firebase 資料
                     console.log('📥 使用 Firebase 資料 (' + remoteCount + ' 筆)');
                     remnants = remoteRemnants;
+                    if (typeof tryShowScanCard === "function") tryShowScanCard();
                     demands = remoteDemands;
                     localStorage.setItem('remnants_v5', JSON.stringify(remnants));
                     localStorage.setItem('demands_v5', JSON.stringify(demands));
@@ -2478,6 +2480,7 @@ v1.8
                 if (JSON.stringify(remoteRemnants) !== JSON.stringify(remnants)) {
                     // 正常同步：接受遠端資料
                     remnants = remoteRemnants;
+                    if (typeof tryShowScanCard === "function") tryShowScanCard();
                     localStorage.setItem('remnants_v5', JSON.stringify(remnants));
                     renderRemnants();
                     hasChanges = true;
@@ -2613,6 +2616,8 @@ v1.8
         
         // 監聽文字輸入
         document.addEventListener('DOMContentLoaded', function() {
+            // 掃碼進來的話：資料到齊就顯示卡片，逾時也要給個交代
+            if (typeof armScanFallback === 'function') { armScanFallback(); tryShowScanCard(); }
             const batchInput = document.getElementById('batchInput');
             if (batchInput) {
                 batchInput.addEventListener('input', updateLineCount);
@@ -3290,6 +3295,142 @@ v1.8
             if (st === '已印') return ' <span style="font-size:11px; color:#15803D;">已印</span>';
             if (st === '待印') return ' <span style="font-size:11px; color:#B45309;">待印</span>';
             return '';
+        }
+
+        // ---------- v1.6.0 掃碼進來 ----------
+        // 貼紙上的 QR 內容是 .../?code=01069，用手機原生相機掃就會開這個網址。
+        // 掃碼的唯一理由是「疊在貨櫃裡不好量」，所以長度放最大。
+        var pendingScanCode = (function () {
+            try {
+                var m = String(location.search || '').match(/[?&]code=([^&]+)/);
+                return m ? decodeURIComponent(m[1]).trim() : null;
+            } catch (e) { return null; }
+        })();
+        var scanFallbackTimer = null;
+
+        function armScanFallback() {
+            if (!pendingScanCode || scanFallbackTimer) return;
+            scanFallbackTimer = setTimeout(function () {
+                if (!pendingScanCode) return;
+                var c = pendingScanCode;
+                pendingScanCode = null;
+                showScanCard(c);
+            }, 3500);
+        }
+
+        function tryShowScanCard() {
+            if (!pendingScanCode) return;
+            if (!remnants || !remnants.length) return;   // 資料還沒到，等下一次
+            var code = pendingScanCode;
+            pendingScanCode = null;
+            if (scanFallbackTimer) { clearTimeout(scanFallbackTimer); scanFallbackTimer = null; }
+            showScanCard(code);
+        }
+
+        function closeScanCard() {
+            var el = document.getElementById('scanCard');
+            if (el) el.parentNode.removeChild(el);
+        }
+
+        function findRemnantByCode(code) {
+            for (var i = 0; i < remnants.length; i++) {
+                if (String(remnants[i].remnantCode) === String(code)) return remnants[i];
+            }
+            return null;
+        }
+
+        function showScanCard(code) {
+            closeScanCard();
+            var r = findRemnantByCode(code);
+            var box = document.createElement('div');
+            box.id = 'scanCard';
+            box.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:10000;'
+                              + ' display:flex; align-items:center; justify-content:center; padding:16px;';
+
+            var inner;
+            if (!r) {
+                // 查無此編號是「安全的失敗」：編號永不回收，所以它不會指到別根管子。
+                inner = '<div style="background:#fff; border-radius:12px; padding:20px; width:100%; max-width:360px;">'
+                      + '<div style="font-size:18px; font-weight:700; margin-bottom:8px;">查無編號 ' + code + '</div>'
+                      + '<div style="font-size:13px; color:#6A6A6A; line-height:1.7; margin-bottom:14px;">'
+                      +   '這個編號不在目前的庫存裡。可能是：<br>'
+                      +   '· 這支已經用完或發加工結案了<br>'
+                      +   '· 這是一張過期的舊貼紙，撕掉即可<br>'
+                      +   '<b>編號不會重複發給別根管子，所以不會查到錯的資料。</b>'
+                      + '</div>'
+                      + '<div style="display:flex; gap:8px; margin-bottom:10px;">'
+                      +   '<input id="scanManual" placeholder="手動輸入編號" style="flex:1; padding:10px; border:1px solid #E8E6E3; border-radius:6px; font-size:15px;">'
+                      +   '<button onclick="showScanCard((document.getElementById(&quot;scanManual&quot;).value||&quot;&quot;).trim())" style="padding:10px 14px; border:none; border-radius:6px; background:#8B7355; color:#fff; font-weight:700;">查詢</button>'
+                      + '</div>'
+                      + '<button onclick="closeScanCard()" style="width:100%; padding:10px; border:1px solid #E8E6E3; border-radius:6px; background:#fff;">關閉</button>'
+                      + '</div>';
+            } else {
+                var proc = (r.processStatus === '加工中');
+                var p = r.proc || {};
+                var locOpts = ['貨櫃', '折床上方', '鋸床管料區'].map(function (L) {
+                    return '<option value="' + L + '"' + (r.location === L ? ' selected' : '') + '>' + L + '</option>';
+                }).join('');
+                inner = '<div style="background:#fff; border-radius:12px; padding:18px; width:100%; max-width:360px;">'
+                      + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">'
+                      +   '<span style="font-weight:700; color:#8B7355; font-size:20px;">' + r.remnantCode + '</span>'
+                      +   (proc ? '<span style="padding:3px 10px; border-radius:999px; font-size:12px; font-weight:700; background:#FBEEDC; color:#9A5B08;">加工中</span>' : '')
+                      +   '<span onclick="closeScanCard()" style="font-size:22px; color:#8A8A8A; cursor:pointer; padding:0 4px;">&times;</span>'
+                      + '</div>'
+                      + '<div style="font-size:46px; font-weight:800; color:#4A4A4A; line-height:1.05; margin:6px 0 2px;">'
+                      +   r.length + '<span style="font-size:18px; font-weight:600; color:#8A8A8A; margin-left:4px;">mm</span></div>'
+                      + '<div style="font-size:14px; color:#6A6A6A; margin-bottom:10px;">'
+                      +   (PIPE_TYPES[r.type] || r.type) + ' ' + r.size + ' · ' + thickText(r) + '</div>'
+                      + (proc
+                          ? ('<div style="background:#FBEEDC; border-radius:6px; padding:10px; font-size:13px; color:#6A4A18; line-height:1.7; margin-bottom:10px;">'
+                             + (p.kind || '-') + ' · ' + (p.plant || '-') + '<br>'
+                             + '發出 ' + (p.outDate || '-') + '　在外 ' + (p.outDate ? daysBetween(p.outDate, todayStr(0)) : 0) + ' 天<br>'
+                             + '<b>這支應該在加工廠。如果你現在摸得到它，代表資料對不上。</b></div>')
+                          : '')
+                      + '<div style="font-size:13px; color:#6A6A6A; margin-bottom:4px;">📍 存放地點</div>'
+                      + '<select onchange="scanChangeLocation(&quot;' + r.remnantCode + '&quot;, this.value)" style="width:100%; padding:10px; border:1px solid #E8E6E3; border-radius:6px; font-size:15px; background:#F9F8F6; margin-bottom:10px;">'
+                      +   locOpts + '</select>'
+                      + '<div style="font-size:12px; color:#8A8A8A; margin-bottom:12px;">🕐 更新 ' + (r.updatedAt || '—') + '</div>'
+                      + '<div style="display:flex; gap:8px;">'
+                      +   '<button onclick="scanChangeLength(&quot;' + r.remnantCode + '&quot;)" style="flex:1; padding:12px; border:none; border-radius:8px; background:#8B7355; color:#fff; font-size:15px; font-weight:700;">改長度</button>'
+                      +   '<button onclick="closeScanCard(); switchPage(&quot;remnant&quot;); editRemnantCard(&quot;' + r.remnantCode + '&quot;);" style="flex:1; padding:12px; border:1px solid #E8E6E3; border-radius:8px; background:#fff; font-size:15px;">去編輯</button>'
+                      + '</div></div>';
+            }
+            box.innerHTML = inner;
+            box.addEventListener('click', function (e) { if (e.target === box) closeScanCard(); });
+            document.body.appendChild(box);
+        }
+
+        function scanChangeLocation(code, loc) {
+            var r = findRemnantByCode(code);
+            if (!r) return;
+            r.updatedAt = todayStr(0);
+            if (typeof updateRemnantLocation === 'function') {
+                updateRemnantLocation(code, loc);
+            } else {
+                r.location = loc;
+                saveToStorage();
+                renderRemnants();
+            }
+        }
+
+        function scanChangeLength(code) {
+            var r = findRemnantByCode(code);
+            if (!r) return;
+            var v = prompt('鋸完剩下多少？（目前 ' + r.length + 'mm）', r.length);
+            if (v === null) return;
+            var n = parseInt(String(v).trim());
+            if (isNaN(n) || n <= 0) { alert('請輸入正整數。'); return; }
+            if (n > r.length) {
+                if (!confirm('新長度 ' + n + 'mm 比目前的 ' + r.length + 'mm 還長。確定要改嗎？')) return;
+            }
+            if (n < MIN_REMNANT) {
+                if (!confirm(n + 'mm 小於最小餘料長度 ' + MIN_REMNANT + 'mm。確定要留著嗎？')) return;
+            }
+            r.length = n;
+            r.updatedAt = todayStr(0);
+            saveToStorage();
+            renderRemnants();
+            showScanCard(code);
         }
 
         function setProcTab(t) {
