@@ -107,6 +107,9 @@ v1.8
                 db.ref('.info/connected').on('value', function(snap) {
                     firebaseConnected = snap.val() === true;
                     updateSyncIndicator();
+                    if (firebaseConnected) {
+                        try { ensureCodePool('01'); ensureCodePool('02'); } catch (e) {}
+                    }
                 });
             } else {
                 console.warn('Firebase SDK 未載入，使用離線模式');
@@ -2934,10 +2937,74 @@ v1.8
             return isNaN(n) ? 0 : n;
         }
 
+        // ---- v1.3.1 編號池：向伺服器原子預約，杜絕跨裝置撞號 ----
+        // 舊做法由各裝置自行推算下一號，兩台同時算就會算出同一個號（已實際發生 8 次）。
+        // 改由 Firebase transaction 在伺服器端序列化配號，預約一批存在本機，
+        // 發號時同步取用，所有呼叫點維持原本的同步寫法。
+        var codePool = {};
+        var poolFilling = {};
+        var POOL_MIN = 3;    // 低於這個數量就補
+        var POOL_SIZE = 10;  // 每次補這麼多
+
+        function localMaxCode(material) {
+            var mx = parseInt(codeSeq[material] || 0) || 0;
+            remnants.forEach(function (r) {
+                var n = codeNumOf(r.remnantCode, material);
+                if (n > mx) mx = n;
+            });
+            return mx;
+        }
+
+        function ensureCodePool(material, n) {
+            if (!material) return;
+            n = n || POOL_SIZE;
+            if (!codePool[material]) codePool[material] = [];
+            if (codePool[material].length >= POOL_MIN) return;
+            if (poolFilling[material]) return;
+            if (!db || !firebaseConnected) return;
+
+            poolFilling[material] = true;
+            var done = false;
+            var timer = setTimeout(function () {
+                if (!done) { done = true; poolFilling[material] = false;
+                    console.warn('編號預約逾時，暫用本機配號'); }
+            }, 6000);
+
+            db.ref('pipeData/codeSeq/' + material).transaction(function (cur) {
+                var base = Math.max(parseInt(cur || 0) || 0, localMaxCode(material));
+                return base + n;
+            }, function (err, committed, snap) {
+                clearTimeout(timer);
+                poolFilling[material] = false;
+                if (done) return;
+                done = true;
+                if (err || !committed || !snap) {
+                    console.warn('編號預約失敗，暫用本機配號:', err && err.message);
+                    return;
+                }
+                var end = parseInt(snap.val()) || 0;
+                for (var i = n - 1; i >= 0; i--) {
+                    codePool[material].push(material + String(end - i).padStart(3, '0'));
+                }
+                codeSeq[material] = end;
+                try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
+                console.log('已向伺服器預約編號:', codePool[material].join(','));
+            });
+        }
+
         // v1.3.0 起：編號一律遞增、永不回收空號。
         // 理由：QR 貼紙是實體的，舊碼被回收會讓貼紙指到另一根管材。
         function getNextRemnantCode(material, extraUsedCodes) {
             const prefix = material;
+
+            // 1. 優先用伺服器預約好的號（原子配號，跨裝置不會撞）
+            if (codePool[prefix] && codePool[prefix].length) {
+                const reserved = codePool[prefix].shift();
+                ensureCodePool(prefix);
+                return reserved;
+            }
+
+            // 2. 沒池子可用（離線 / 尚未補到）→ 本機高水位備援
             let maxNum = parseInt(codeSeq[prefix] || 0) || 0;
             remnants.forEach(r => {
                 const n = codeNumOf(r.remnantCode, prefix);
@@ -2950,6 +3017,7 @@ v1.8
             const next = maxNum + 1;
             codeSeq[prefix] = next;
             try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
+            ensureCodePool(prefix);
             return prefix + String(next).padStart(3, '0');
         }
 
