@@ -1145,8 +1145,12 @@ v1.8
             if (page === 'main') {
                 tabs[0].classList.add('active');
                 document.getElementById('mainPage').classList.add('active');
-            } else if (page === 'remnant') {
+            } else if (page === 'process') {
                 tabs[1].classList.add('active');
+                document.getElementById('processPage').classList.add('active');
+                if (typeof renderProcessOrders === 'function') renderProcessOrders();
+            } else if (page === 'remnant') {
+                tabs[2].classList.add('active');
                 document.getElementById('remnantPage').classList.add('active');
             }
         }
@@ -1225,6 +1229,7 @@ v1.8
         <!-- 導航標籤 -->
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchPage('main')">📐 切割計算</button>
+            <button class="nav-tab" onclick="switchPage('process')">🏭 發加工</button>
             <button class="nav-tab" onclick="switchPage('remnant')">📦 餘料管理</button>
         </div>
         
@@ -1620,7 +1625,17 @@ v1.8
 
     </div>
 
-    <script>
+            <div class="page" id="processPage">
+            <h1 style="font-size:20px; color:#4A4A4A; margin:0 0 4px;">🏭 發加工</h1>
+            <div style="font-size:12px; color:#8A8A8A; margin-bottom:14px;">唯讀。發出與結案請在桌面版操作。</div>
+            <div style="display:flex; gap:6px; margin-bottom:12px;">
+                <button id="procTabOut" onclick="setProcTab('out')" style="flex:1; padding:9px; border:1px solid #E8E6E3; border-radius:6px; font-size:14px; background:#4A4A4A; color:#fff;">加工中</button>
+                <button id="procTabDone" onclick="setProcTab('done')" style="flex:1; padding:9px; border:1px solid #E8E6E3; border-radius:6px; font-size:14px; background:#fff; color:#4A4A4A;">已結案</button>
+            </div>
+            <div id="procCards"></div>
+        </div>
+
+<script>
         // 系統參數
         const STOCK_LENGTH = 5980; // 6000-20mm安全餘量（一般管材新料：扣 20mm 切割預留）
         const STOCK_LENGTH_ROD = 7200; // 圓棒新料：用足 7200mm，不扣切割預留
@@ -2051,6 +2066,7 @@ v1.8
                     remnants: remnants.length > 0 ? remnants : 'EMPTY',
                     demands: demands.length > 0 ? demands : 'EMPTY',
                     codeSeq: codeSeq,
+                    processHistory: processHistory,
                     lastUpdated: firebase.database.ServerValue.TIMESTAMP,
                     updatedBy: 'mobile'
                 };
@@ -2441,6 +2457,11 @@ v1.8
                 var hasChanges = false;
                 
                 // 解析餘料（處理 EMPTY 標記）
+                if (data.processHistory) {
+                    processHistory = Array.isArray(data.processHistory)
+                        ? data.processHistory
+                        : Object.values(data.processHistory);
+                }
                 if (data.codeSeq) {
                     Object.keys(data.codeSeq).forEach(function (p) {
                         var remote = parseInt(data.codeSeq[p] || 0) || 0;
@@ -3204,6 +3225,31 @@ v1.8
         
         // v1.4.0 同規格計數：一支一碼之後「數量」恆為 1，改顯示「第幾/共幾」，
         // 讓你不用一支一支數就知道同規格總共有幾支。單支顯示破折號，避免整欄雜訊。
+        // v1.5.2 厚度文字統一由這裡產生（避免 t4 / t=4mm 混用）
+        function thickText(x) {
+            return (NO_THICKNESS_TYPES.indexOf(x.type) >= 0) ? '(實心)' : ('t=' + x.thickness + 'mm');
+        }
+
+        function todayStr(offsetDays) {
+            var d = new Date();
+            if (offsetDays) d.setDate(d.getDate() + offsetDays);
+            var m = String(d.getMonth() + 1), day = String(d.getDate());
+            if (m.length < 2) m = '0' + m;
+            if (day.length < 2) day = '0' + day;
+            return d.getFullYear() + '-' + m + '-' + day;
+        }
+
+        function daysBetween(a, b) {
+            var d1 = new Date(a), d2 = new Date(b);
+            if (isNaN(d1) || isNaN(d2)) return 0;
+            return Math.round((d2 - d1) / 86400000);
+        }
+
+        // 發加工在桌面版操作，手機版只看。加工單結案後那筆庫存會被刪除，
+        // 歷史是唯一留下來的紀錄，所以要跟著 pipeData 一起同步過來。
+        var processHistory = [];
+        var procTab = 'out';
+
         function specKeyOf(x) {
             return [x.type, x.size, x.thickness, x.length].join('|');
         }
@@ -3246,6 +3292,97 @@ v1.8
             return '';
         }
 
+        function setProcTab(t) {
+            procTab = t;
+            var a = document.getElementById('procTabOut');
+            var b = document.getElementById('procTabDone');
+            if (a) { a.style.background = (t === 'out' ? '#4A4A4A' : '#fff'); a.style.color = (t === 'out' ? '#fff' : '#4A4A4A'); }
+            if (b) { b.style.background = (t === 'done' ? '#4A4A4A' : '#fff'); b.style.color = (t === 'done' ? '#fff' : '#4A4A4A'); }
+            renderProcessOrders();
+        }
+
+        function renderProcessOrders() {
+            var box = document.getElementById('procCards');
+            if (!box) return;
+            var done = (procTab === 'done');
+            var today = todayStr(0);
+
+            var rows = [];
+            if (done) {
+                processHistory.forEach(function (h) { rows.push(h); });
+            } else {
+                remnants.forEach(function (r) {
+                    if (r.processStatus !== '加工中') return;
+                    var p = r.proc || {};
+                    rows.push({ code: r.remnantCode, type: r.type, size: r.size, thickness: r.thickness,
+                                length: r.length, kind: p.kind, plant: p.plant, vendor: p.vendor,
+                                handler: p.handler, outDate: p.outDate, dueDate: p.dueDate });
+                });
+            }
+
+            if (!rows.length) {
+                box.innerHTML = '<div style="padding:34px 16px; text-align:center; color:#8A8A8A; font-size:14px;">'
+                    + (done ? '還沒有結案的加工單。' : '目前沒有料在加工廠。') + '</div>';
+                return;
+            }
+
+            var groups = {};
+            rows.forEach(function (o) {
+                var k = [o.outDate, o.plant, o.vendor, o.kind, done ? o.closeDate : ''].join('|');
+                if (!groups[k]) groups[k] = [];
+                groups[k].push(o);
+            });
+            var keys = Object.keys(groups).sort(function (a, b) {
+                return String(groups[b][0].outDate || '').localeCompare(String(groups[a][0].outDate || ''));
+            });
+
+            var overdue = 0;
+            var html = '';
+            keys.forEach(function (k) {
+                var g = groups[k], o = g[0];
+                var days = o.outDate ? daysBetween(o.outDate, done ? (o.closeDate || today) : today) : 0;
+                var over = (!done && o.dueDate && daysBetween(o.dueDate, today) > 0);
+                var overDays = over ? daysBetween(o.dueDate, today) : 0;
+                if (over) overdue++;
+
+                var codes = g.map(function (x) {
+                    return '<span style="display:inline-block; margin-right:12px; font-weight:700; color:#8B7355; font-size:15px;">' + x.code + '</span>';
+                }).join('');
+                var specSet = {}, lenSet = {};
+                g.forEach(function (x) { specSet[(PIPE_TYPES[x.type] || x.type) + ' ' + x.size] = 1; lenSet[x.length] = 1; });
+                var sk = Object.keys(specSet), lk = Object.keys(lenSet);
+                var specText = sk.length === 1 ? (sk[0] + ' ' + thickText(o)) : ('多種規格（' + sk.length + ' 種）');
+                var lenText = lk.length === 1 ? (lk[0] + 'mm') : (lk.length + ' 種長度');
+
+                html += '<div style="background:' + (over ? '#FBE7E7' : '#fff') + '; border:1px solid ' + (over ? '#F0C8C8' : '#E8E6E3')
+                      + '; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">'
+                      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">'
+                      +   '<div style="line-height:1.9;">' + codes
+                      +     '<span style="color:#8A8A8A; font-size:12px;">' + g.length + ' 支</span></div>'
+                      +   '<span style="padding:3px 9px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; background:'
+                      +     (over ? '#F5D5D5; color:#A81E1E;' : '#FBEEDC; color:#9A5B08;') + '">'
+                      +     (done ? '已結案' : (over ? ('逾期 ' + overDays + ' 天') : '加工中')) + '</span>'
+                      + '</div>'
+                      + '<div style="background:#F9F8F6; border-radius:6px; padding:10px; margin-bottom:10px;">'
+                      +   '<div style="font-size:14px; font-weight:600; color:#4A4A4A; margin-bottom:3px;">'
+                      +     (o.kind || '-') + ' · ' + (o.plant || '-') + '</div>'
+                      +   '<div style="font-size:12px; color:#6A6A6A;">廠商 ' + (o.vendor || '-')
+                      +     '　經手 ' + (o.handler || '-') + '</div>'
+                      + '</div>'
+                      + '<div style="font-size:13px; color:#6A6A6A; line-height:1.7;">'
+                      +   specText + '　' + lenText + '<br>'
+                      +   '發出 ' + (o.outDate || '-')
+                      +   (done ? ('　結案 ' + (o.closeDate || '-')) : ('　預計 ' + (o.dueDate || '-')))
+                      +   '　<b style="color:#4A4A4A;">在外 ' + days + ' 天</b>'
+                      + '</div></div>';
+            });
+
+            box.innerHTML = '<div style="font-size:12px; color:#8A8A8A; padding:2px 2px 10px;">'
+                + keys.length + ' 張加工單 · 共 ' + rows.length + ' 支'
+                + (done ? '' : (overdue ? (' · 逾期 ' + overdue + ' 張') : ' · 沒有逾期'))
+                + '</div>' + html;
+        }
+
         function renderRemnantsBySpec() {
             var container = document.getElementById('remnantCards');
             if (!container) return;
@@ -3286,7 +3423,7 @@ v1.8
                     return String(a.remnantCode).localeCompare(String(b.remnantCode));
                 });
                 var r = g[0];
-                var th = (NO_THICKNESS_TYPES.indexOf(r.type) >= 0) ? '(實心)' : ('t=' + r.thickness + 'mm');
+                var th = thickText(r);
                 var codes = g.map(function (x) {
                     return '<span style="display:inline-block; margin-right:12px; font-weight:700; color:#8B7355; font-size:15px;">'
                          + x.remnantCode + labelTagHtml(x) + '</span>';
@@ -3406,7 +3543,7 @@ v1.8
                 ">
                     <!-- 頂部：編號 + 地點 -->
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="font-weight: 700; color: #8B7355; font-size: 15px;">${r.remnantCode}</span>
+                        <span style="font-weight: 700; color: #8B7355; font-size: 15px;">${r.remnantCode}</span>${r.processStatus === '加工中' ? '<span style="margin-left:6px; padding:2px 7px; border-radius:999px; font-size:10px; font-weight:700; background:#FBEEDC; color:#9A5B08;">加工中</span>' : ''}
                         <select class="card-location-select" data-code="${r.remnantCode}" style="
                             padding: 4px 8px;
                             border: 1px solid #E8E6E3;
@@ -4051,7 +4188,7 @@ v1.8
             
             // 展開餘料
             let remnantStock = [];
-            remnantList.forEach(r => {
+            remnantList.filter(r => r.processStatus !== '加工中').forEach(r => {
                 for (let i = 0; i < r.qty; i++) {
                     remnantStock.push({material: r.material, remnantCode: r.remnantCode, type: r.type, size: r.size, thickness: r.thickness, length: r.length});
                 }
