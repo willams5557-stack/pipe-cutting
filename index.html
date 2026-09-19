@@ -3249,40 +3249,67 @@ v1.8
         function renderRemnantsBySpec() {
             var container = document.getElementById('remnantCards');
             if (!container) return;
+
+            var searchEl = document.getElementById('remnantSearch');
+            var q = ((searchEl && searchEl.value) || '').toLowerCase().trim();
+            var src = remnants.filter(function (r) {
+                if (!q) return true;
+                var hay = [r.remnantCode, r.size, r.location, r.length].join(' ').toLowerCase();
+                return hay.indexOf(q) >= 0;
+            });
+
             var groups = {};
-            remnants.forEach(function (r) {
+            src.forEach(function (r) {
                 var k = specKeyOf(r);
                 if (!groups[k]) groups[k] = [];
                 groups[k].push(r);
             });
             var keys = Object.keys(groups);
-            keys.sort(function (p, q) {
-                var a = groups[p][0], b = groups[q][0];
+            keys.sort(function (p, q2) {
+                var a = groups[p][0], b = groups[q2][0];
+                if (a.material !== b.material) return String(a.material).localeCompare(String(b.material));
                 if (a.type !== b.type) return String(a.type).localeCompare(String(b.type));
                 if (a.size !== b.size) return String(a.size).localeCompare(String(b.size));
                 return (parseInt(a.length) || 0) - (parseInt(b.length) || 0);
             });
-            var html = '<div style="font-size:12px; color:#8A8A8A; padding:4px 2px 10px;">'
-                     + keys.length + ' 種規格，共 ' + remnants.length + ' 支</div>';
+
+            if (!keys.length) {
+                container.innerHTML = '<div style="padding:30px; text-align:center; color:#8A8A8A;">沒有符合的餘料</div>';
+                return;
+            }
+
+            var html = '<div style="font-size:12px; color:#8A8A8A; padding:2px 2px 10px;">'
+                     + keys.length + ' 種規格，共 ' + src.length + ' 支</div>';
+
             keys.forEach(function (k) {
                 var g = groups[k].slice().sort(function (a, b) {
                     return String(a.remnantCode).localeCompare(String(b.remnantCode));
                 });
                 var r = g[0];
-                var th = (typeof NO_THICKNESS_TYPES !== 'undefined' && NO_THICKNESS_TYPES.indexOf(r.type) >= 0)
-                         ? '實心' : ('t' + r.thickness);
+                var th = (NO_THICKNESS_TYPES.indexOf(r.type) >= 0) ? '(實心)' : ('t=' + r.thickness + 'mm');
                 var codes = g.map(function (x) {
-                    return '<span style="display:inline-block; margin:2px 10px 2px 0; font-weight:700; color:#4A4A4A;">'
+                    return '<span style="display:inline-block; margin-right:12px; font-weight:700; color:#8B7355; font-size:15px;">'
                          + x.remnantCode + labelTagHtml(x) + '</span>';
                 }).join('');
-                html += '<div style="background:#fff; border:1px solid #E8E6E3; border-radius:8px; padding:12px 14px; margin-bottom:8px;">'
-                      + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
-                      + '<div style="font-weight:700; color:#4A4A4A;">'
-                      + (PIPE_TYPES[r.type] || r.type) + ' ' + r.size + ' · ' + th + ' · ' + r.length + 'mm</div>'
-                      + '<div style="font-weight:700; font-size:17px; color:#4A4A4A; white-space:nowrap;">' + g.length + ' 支</div>'
+
+                html += '<div class="remnant-card" style="background:white; border:1px solid #E8E6E3; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">'
+                      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">'
+                      +   '<div style="line-height:1.9;">' + codes + '</div>'
+                      +   '<span style="padding:4px 8px; border:1px solid #E8E6E3; border-radius:4px; font-size:12px; background:#F9F8F6; white-space:nowrap;">📍 ' + (r.location || '') + '</span>'
                       + '</div>'
-                      + '<div style="margin-top:6px; font-size:13px; line-height:1.9;">' + codes + '</div>'
-                      + '<div style="margin-top:4px; font-size:11px; color:#8A8A8A;">' + (r.location || '') + '</div>'
+                      + '<div style="background:#F9F8F6; border-radius:6px; padding:10px; margin-bottom:10px;">'
+                      +   '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">'
+                      +     '<span class="type-tag type-' + r.type + '">' + (PIPE_TYPES[r.type] || r.type) + '</span>'
+                      +     '<span style="font-size:16px; font-weight:600; color:#4A4A4A;">' + r.size + '</span>'
+                      +     '<span style="color:#8A8A8A; font-size:13px;">' + th + '</span>'
+                      +   '</div>'
+                      + '</div>'
+                      + '<div style="display:flex; gap:15px;">'
+                      +   '<div><span style="color:#8A8A8A; font-size:11px;">長度</span><br>'
+                      +     '<span style="font-weight:700; font-size:15px; color:#4A4A4A;">' + r.length + 'mm</span></div>'
+                      +   '<div><span style="color:#8A8A8A; font-size:11px;">支數</span><br>'
+                      +     '<span style="font-weight:700; font-size:15px; color:#4A4A4A;">' + g.length + ' 支</span></div>'
+                      + '</div>'
                       + '</div>';
             });
             container.innerHTML = html;
