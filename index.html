@@ -2991,7 +2991,17 @@ v1.8
         // 舊做法由各裝置自行推算下一號，兩台同時算就會算出同一個號（已實際發生 8 次）。
         // 改由 Firebase transaction 在伺服器端序列化配號，預約一批存在本機，
         // 發號時同步取用，所有呼叫點維持原本的同步寫法。
-        var codePool = {};
+        // v2.0.1 號碼池存進 localStorage：原本只放記憶體，每次重新整理
+        // 就把預約好的 10 個號丟掉、再跟伺服器要 10 個，白白燒掉編號額度
+        // （實測計數器比實際資料超前 90 號）。改成存起來，重整後接著用。
+        var codePool = (function () {
+            try { return JSON.parse(localStorage.getItem('codePool_v1') || '{}'); }
+            catch (e) { return {}; }
+        })();
+
+        function saveCodePool() {
+            try { localStorage.setItem('codePool_v1', JSON.stringify(codePool)); } catch (e) {}
+        }
         var poolFilling = {};
         var POOL_MIN = 3;    // 低於這個數量就補
         var POOL_SIZE = 10;  // 每次補這麼多
@@ -3038,6 +3048,7 @@ v1.8
                 }
                 codeSeq[material] = end;
                 try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
+                saveCodePool();
                 console.log('已向伺服器預約編號:', codePool[material].join(','));
             });
         }
@@ -3050,6 +3061,7 @@ v1.8
             // 1. 優先用伺服器預約好的號（原子配號，跨裝置不會撞）
             if (codePool[prefix] && codePool[prefix].length) {
                 const reserved = codePool[prefix].shift();
+                saveCodePool();
                 ensureCodePool(prefix);
                 return reserved;
             }
