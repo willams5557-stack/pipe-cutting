@@ -3198,6 +3198,25 @@ v1.8
             renderRemnants();
         }
         
+        // v1.4.0 同規格計數：一支一碼之後「數量」恆為 1，改顯示「第幾/共幾」，
+        // 讓你不用一支一支數就知道同規格總共有幾支。單支顯示破折號，避免整欄雜訊。
+        function specKeyOf(x) {
+            return [x.type, x.size, x.thickness, x.length].join('|');
+        }
+        function specCountText(r) {
+            var k = specKeyOf(r);
+            var sibs = remnants.filter(function (x) { return specKeyOf(x) === k; });
+            if (sibs.length <= 1) return '—';
+            sibs.sort(function (a, b) {
+                return String(a.remnantCode).localeCompare(String(b.remnantCode));
+            });
+            var idx = 0;
+            for (var i = 0; i < sibs.length; i++) {
+                if (sibs[i].remnantCode === r.remnantCode) { idx = i + 1; break; }
+            }
+            return idx + '/' + sibs.length;
+        }
+
         function renderRemnants() {
             const container = document.getElementById('remnantCards');
             const searchText = (document.getElementById('remnantSearch')?.value || '').toLowerCase().trim();
@@ -3329,8 +3348,8 @@ v1.8
                                 <span style="font-weight: 700; font-size: 15px; color: #4A4A4A;">${r.length}mm</span>
                             </div>
                             <div>
-                                <span style="color: #8A8A8A; font-size: 11px;">數量</span><br>
-                                <span style="font-weight: 700; font-size: 15px; color: #4A4A4A;">${r.qty}支</span>
+                                <span style="color: #8A8A8A; font-size: 11px;">支數</span><br>
+                                <span style="font-weight: 700; font-size: 15px; color: #4A4A4A;">${specCountText(r)}</span>
                             </div>
                         </div>
                         <div style="display: flex; gap: 6px;">
