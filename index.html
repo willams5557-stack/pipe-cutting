@@ -2043,6 +2043,7 @@ v1.8
                 var dataToSync = {
                     remnants: remnants.length > 0 ? remnants : 'EMPTY',
                     demands: demands.length > 0 ? demands : 'EMPTY',
+                    codeSeq: codeSeq,
                     lastUpdated: firebase.database.ServerValue.TIMESTAMP,
                     updatedBy: 'mobile'
                 };
@@ -2433,6 +2434,14 @@ v1.8
                 var hasChanges = false;
                 
                 // 解析餘料（處理 EMPTY 標記）
+                if (data.codeSeq) {
+                    Object.keys(data.codeSeq).forEach(function (p) {
+                        var remote = parseInt(data.codeSeq[p] || 0) || 0;
+                        var local = parseInt(codeSeq[p] || 0) || 0;
+                        codeSeq[p] = Math.max(remote, local);
+                    });
+                    try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
+                }
                 var remoteRemnants = data.remnants === 'EMPTY' ? [] : (data.remnants || []);
                 // Firebase 會把 Array 轉成 Object（如果有空位），確保是陣列
                 if (!Array.isArray(remoteRemnants)) {
@@ -2913,16 +2922,35 @@ v1.8
         
         // 流水號管理（以 remnantCode 字串為依據，優先填補空號）
         // extraUsedCodes：同一批次中已分配但還沒寫入 remnants 的編號（避免批次內撞號）
+        // 編號水位：記錄每個材質前綴「歷來發出過的最大號」，永不回收
+        var codeSeq = (function () {
+            try { return JSON.parse(localStorage.getItem('codeSeq_v1') || '{}'); }
+            catch (e) { return {}; }
+        })();
+
+        function codeNumOf(code, prefix) {
+            if (!code || !code.startsWith(prefix)) return 0;
+            var n = parseInt(code.substring(2));
+            return isNaN(n) ? 0 : n;
+        }
+
+        // v1.3.0 起：編號一律遞增、永不回收空號。
+        // 理由：QR 貼紙是實體的，舊碼被回收會讓貼紙指到另一根管材。
         function getNextRemnantCode(material, extraUsedCodes) {
             const prefix = material;
-            const used = new Set();
+            let maxNum = parseInt(codeSeq[prefix] || 0) || 0;
             remnants.forEach(r => {
-                if (r.remnantCode && r.remnantCode.startsWith(prefix)) used.add(r.remnantCode);
+                const n = codeNumOf(r.remnantCode, prefix);
+                if (n > maxNum) maxNum = n;
             });
-            if (extraUsedCodes) extraUsedCodes.forEach(c => used.add(c));
-            let n = 1;
-            while (used.has(prefix + String(n).padStart(3, '0'))) n++;
-            return prefix + String(n).padStart(3, '0');
+            if (extraUsedCodes) extraUsedCodes.forEach(c => {
+                const n = codeNumOf(c, prefix);
+                if (n > maxNum) maxNum = n;
+            });
+            const next = maxNum + 1;
+            codeSeq[prefix] = next;
+            try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
+            return prefix + String(next).padStart(3, '0');
         }
 
         // 計算餘料統計：總筆數、各材質最大編號與空號數
@@ -3713,7 +3741,15 @@ v1.8
         }
         
         // 編輯餘料數量
+        // v1.3.0 起：一支一碼，qty 恆為 1，不開放直接編輯。
+        // 要增加庫存請用「新增餘料」（會自動展開成各自獨立的紀錄與編號）。
         function editRemnantQty(remnantCode, cell) {
+            alert('一支一碼模式：每筆紀錄固定 1 支，不能直接改數量。要增加庫存請用「新增餘料」，系統會自動產生各自的編號與 QR。');
+            renderRemnants();
+            return;
+        }
+
+        function editRemnantQty_legacy_disabled(remnantCode, cell) {
             const remnant = remnants.find(r => r.remnantCode === remnantCode);
             if (!remnant) return;
             
