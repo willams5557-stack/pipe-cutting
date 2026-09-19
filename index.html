@@ -1541,6 +1541,10 @@ v1.8
                             <input type="text" id="remnantSearch" placeholder="🔍 搜尋編號/規格/地點..." 
                                    oninput="renderRemnants()"
                                    style="flex: 1; min-width: 150px; padding: 8px 12px; border: 1px solid #E8E6E3; border-radius: 4px; font-size: 14px;">
+                            <div style="display:flex; gap:4px; margin-right:6px;">
+                                <button id="viewBtnList" onclick="setRemnantView('list')" style="padding:8px 12px; border:1px solid #E8E6E3; border-radius:4px; font-size:13px; background:#4A4A4A; color:#fff; cursor:pointer;">逐支</button>
+                                <button id="viewBtnSpec" onclick="setRemnantView('spec')" style="padding:8px 12px; border:1px solid #E8E6E3; border-radius:4px; font-size:13px; background:#fff; color:#4A4A4A; cursor:pointer;">依規格</button>
+                            </div>
                             <select id="remnantSortSelect" onchange="handleSortChange()" 
                                     style="padding: 8px; border: 1px solid #E8E6E3; border-radius: 4px; font-size: 13px;">
                                 <option value="">排序方式</option>
@@ -3217,7 +3221,75 @@ v1.8
             return idx + '/' + sibs.length;
         }
 
+        // v1.4.0 依規格檢視：一支一碼之後同規格會散成好幾列，
+        // 這個檢視把同規格收成一行並寫出支數，印貼紙前一眼看到每種要印幾張。
+        var remnantViewMode = 'list';
+
+        function setRemnantView(mode) {
+            remnantViewMode = mode;
+            var a = document.getElementById('viewBtnList');
+            var b = document.getElementById('viewBtnSpec');
+            if (a && b) {
+                var on  = 'background:#4A4A4A; color:#fff;';
+                var off = 'background:#fff; color:#4A4A4A;';
+                var base = 'padding:8px 12px; border:1px solid #E8E6E3; border-radius:4px; font-size:13px; cursor:pointer; ';
+                a.style.cssText = base + (mode === 'list' ? on : off);
+                b.style.cssText = base + (mode === 'spec' ? on : off);
+            }
+            renderRemnants();
+        }
+
+        function labelTagHtml(x) {
+            var st = x.qrStatus;
+            if (st === '已印') return ' <span style="font-size:11px; color:#15803D;">已印</span>';
+            if (st === '待印') return ' <span style="font-size:11px; color:#B45309;">待印</span>';
+            return '';
+        }
+
+        function renderRemnantsBySpec() {
+            var container = document.getElementById('remnantCards');
+            if (!container) return;
+            var groups = {};
+            remnants.forEach(function (r) {
+                var k = specKeyOf(r);
+                if (!groups[k]) groups[k] = [];
+                groups[k].push(r);
+            });
+            var keys = Object.keys(groups);
+            keys.sort(function (p, q) {
+                var a = groups[p][0], b = groups[q][0];
+                if (a.type !== b.type) return String(a.type).localeCompare(String(b.type));
+                if (a.size !== b.size) return String(a.size).localeCompare(String(b.size));
+                return (parseInt(a.length) || 0) - (parseInt(b.length) || 0);
+            });
+            var html = '<div style="font-size:12px; color:#8A8A8A; padding:4px 2px 10px;">'
+                     + keys.length + ' 種規格，共 ' + remnants.length + ' 支</div>';
+            keys.forEach(function (k) {
+                var g = groups[k].slice().sort(function (a, b) {
+                    return String(a.remnantCode).localeCompare(String(b.remnantCode));
+                });
+                var r = g[0];
+                var th = (typeof NO_THICKNESS_TYPES !== 'undefined' && NO_THICKNESS_TYPES.indexOf(r.type) >= 0)
+                         ? '實心' : ('t' + r.thickness);
+                var codes = g.map(function (x) {
+                    return '<span style="display:inline-block; margin:2px 10px 2px 0; font-weight:700; color:#4A4A4A;">'
+                         + x.remnantCode + labelTagHtml(x) + '</span>';
+                }).join('');
+                html += '<div style="background:#fff; border:1px solid #E8E6E3; border-radius:8px; padding:12px 14px; margin-bottom:8px;">'
+                      + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
+                      + '<div style="font-weight:700; color:#4A4A4A;">'
+                      + (PIPE_TYPES[r.type] || r.type) + ' ' + r.size + ' · ' + th + ' · ' + r.length + 'mm</div>'
+                      + '<div style="font-weight:700; font-size:17px; color:#4A4A4A; white-space:nowrap;">' + g.length + ' 支</div>'
+                      + '</div>'
+                      + '<div style="margin-top:6px; font-size:13px; line-height:1.9;">' + codes + '</div>'
+                      + '<div style="margin-top:4px; font-size:11px; color:#8A8A8A;">' + (r.location || '') + '</div>'
+                      + '</div>';
+            });
+            container.innerHTML = html;
+        }
+
         function renderRemnants() {
+            if (remnantViewMode === 'spec') { renderRemnantsBySpec(); return; }
             const container = document.getElementById('remnantCards');
             const searchText = (document.getElementById('remnantSearch')?.value || '').toLowerCase().trim();
             const normalizedSearch = normalizeForSearch(searchText); // 移除 Ø 符號
