@@ -4,7 +4,7 @@
 管材切割優化系統 v2.0
 ================================================================================
 
-v2.0  【一支一碼 + QR 追蹤 + 發加工】
+v2.0  【一支一碼 + QR 追蹤 + 加工】
   編號
   - 編號改為永不回收（原本填補空號，會讓退役編號重新發給別根管子，
     貼紙就指到錯的料；正式資料裡已因此撞號 8 組，已修正改號）
@@ -17,7 +17,7 @@ v2.0  【一支一碼 + QR 追蹤 + 發加工】
   - 逐支或勾選多支標記待印，列印 No.90221 標籤紙（65x40mm，21 張/頁）
   - 貼紙印 QR + 編號 + 規格 + 長度（長度最大，貼前肉眼可核對）
   - 手機掃 ?code= 跳出資訊卡，長度最大呈現，可直接改長度／改地點
-  發加工
+  加工
   - 獨立分頁：發出、加工中、結案、取消加工
   - 加工中的料自動排除於切割演算法之外
   - 紀錄留到結案才刪，所以料在外面時 QR 仍掃得到，帳實不符會當場浮現
@@ -1249,7 +1249,7 @@ v1.8
         <!-- 導航標籤 -->
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchPage('main')">📐 切割計算</button>
-            <button class="nav-tab" onclick="switchPage('process')">🏭 發加工</button>
+            <button class="nav-tab" onclick="switchPage('process')">🏭 加工</button>
             <button class="nav-tab" onclick="switchPage('remnant')">📦 餘料管理</button>
         </div>
         
@@ -1646,7 +1646,7 @@ v1.8
     </div>
 
             <div class="page" id="processPage">
-            <h1 style="font-size:20px; color:#4A4A4A; margin:0 0 4px;">🏭 發加工</h1>
+            <h1 style="font-size:20px; color:#4A4A4A; margin:0 0 4px;">🏭 加工</h1>
             <div style="font-size:12px; color:#8A8A8A; margin-bottom:14px;">唯讀。發出與結案請在桌面版操作。</div>
             <div style="display:flex; gap:6px; margin-bottom:12px;">
                 <button id="procTabOut" onclick="setProcTab('out')" style="flex:1; padding:9px; border:1px solid #E8E6E3; border-radius:6px; font-size:14px; background:#4A4A4A; color:#fff;">加工中</button>
@@ -3276,13 +3276,7 @@ v1.8
             return d.getFullYear() + '-' + m + '-' + day;
         }
 
-        function daysBetween(a, b) {
-            var d1 = new Date(a), d2 = new Date(b);
-            if (isNaN(d1) || isNaN(d2)) return 0;
-            return Math.round((d2 - d1) / 86400000);
-        }
-
-        // 發加工在桌面版操作，手機版只看。加工單結案後那筆庫存會被刪除，
+        // 加工在桌面版操作，手機版只看。加工單結案後那筆庫存會被刪除，
         // 歷史是唯一留下來的紀錄，所以要跟著 pipeData 一起同步過來。
         var processHistory = [];
         var procTab = 'out';
@@ -3386,7 +3380,7 @@ v1.8
                       + '<div style="font-size:18px; font-weight:700; margin-bottom:8px;">查無編號 ' + code + '</div>'
                       + '<div style="font-size:13px; color:#6A6A6A; line-height:1.7; margin-bottom:14px;">'
                       +   '這個編號不在目前的庫存裡。可能是：<br>'
-                      +   '· 這支已經用完或發加工結案了<br>'
+                      +   '· 這支已經用完或加工結案了<br>'
                       +   '· 這是一張過期的舊貼紙，撕掉即可<br>'
                       +   '<b>編號不會重複發給別根管子，所以不會查到錯的資料。</b>'
                       + '</div>'
@@ -3414,8 +3408,8 @@ v1.8
                       +   (PIPE_TYPES[r.type] || r.type) + ' ' + r.size + ' · ' + thickText(r) + '</div>'
                       + (proc
                           ? ('<div style="background:#FBEEDC; border-radius:6px; padding:10px; font-size:13px; color:#6A4A18; line-height:1.7; margin-bottom:10px;">'
-                             + (p.kind || '-') + ' · ' + (p.plant || '-') + '<br>'
-                             + '發出 ' + (p.outDate || '-') + '　在外 ' + (p.outDate ? daysBetween(p.outDate, todayStr(0)) : 0) + ' 天<br>'
+                             + '加工廠 ' + (p.plant || '-') + '<br>'
+                             + '廠商 ' + (p.vendor || '-') + '<br>'
                              + '<b>這支應該在加工廠。如果你現在摸得到它，代表資料對不上。</b></div>')
                           : '')
                       + '<div style="font-size:13px; color:#6A6A6A; margin-bottom:4px;">📍 存放地點</div>'
@@ -3478,7 +3472,6 @@ v1.8
             var box = document.getElementById('procCards');
             if (!box) return;
             var done = (procTab === 'done');
-            var today = todayStr(0);
 
             var rows = [];
             if (done) {
@@ -3488,8 +3481,7 @@ v1.8
                     if (r.processStatus !== '加工中') return;
                     var p = r.proc || {};
                     rows.push({ code: r.remnantCode, type: r.type, size: r.size, thickness: r.thickness,
-                                length: r.length, kind: p.kind, plant: p.plant, vendor: p.vendor,
-                                handler: p.handler, outDate: p.outDate, dueDate: p.dueDate });
+                                length: r.length, plant: p.plant, vendor: p.vendor, outDate: p.outDate });
                 });
             }
 
@@ -3501,7 +3493,8 @@ v1.8
 
             var groups = {};
             rows.forEach(function (o) {
-                var k = [o.outDate, o.plant, o.vendor, o.kind, done ? o.closeDate : ''].join('|');
+                // 同一間加工廠、同一個廠商摺成一張單；不看日期也不看加工內容。
+                var k = [o.plant, o.vendor, done ? o.closeDate : ''].join('|');
                 if (!groups[k]) groups[k] = [];
                 groups[k].push(o);
             });
@@ -3509,14 +3502,9 @@ v1.8
                 return String(groups[b][0].outDate || '').localeCompare(String(groups[a][0].outDate || ''));
             });
 
-            var overdue = 0;
             var html = '';
             keys.forEach(function (k) {
                 var g = groups[k], o = g[0];
-                var days = o.outDate ? daysBetween(o.outDate, done ? (o.closeDate || today) : today) : 0;
-                var over = (!done && o.dueDate && daysBetween(o.dueDate, today) > 0);
-                var overDays = over ? daysBetween(o.dueDate, today) : 0;
-                if (over) overdue++;
 
                 var codes = g.map(function (x) {
                     return '<span style="display:inline-block; margin-right:12px; font-weight:700; color:#8B7355; font-size:15px;">' + x.code + '</span>';
@@ -3527,33 +3515,27 @@ v1.8
                 var specText = sk.length === 1 ? (sk[0] + ' ' + thickText(o)) : ('多種規格（' + sk.length + ' 種）');
                 var lenText = lk.length === 1 ? (lk[0] + 'mm') : (lk.length + ' 種長度');
 
-                html += '<div style="background:' + (over ? '#FBE7E7' : '#fff') + '; border:1px solid ' + (over ? '#F0C8C8' : '#E8E6E3')
-                      + '; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">'
+                html += '<div style="background:#fff; border:1px solid #E8E6E3;'
+                      + ' border-radius:8px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">'
                       + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">'
                       +   '<div style="line-height:1.9;">' + codes
                       +     '<span style="color:#8A8A8A; font-size:12px;">' + g.length + ' 支</span></div>'
                       +   '<span style="padding:3px 9px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; background:'
-                      +     (over ? '#F5D5D5; color:#A81E1E;' : '#FBEEDC; color:#9A5B08;') + '">'
-                      +     (done ? '已結案' : (over ? ('逾期 ' + overDays + ' 天') : '加工中')) + '</span>'
+                      +     (done ? '#E8E6E3; color:#6A6A6A;' : '#FBEEDC; color:#9A5B08;') + '">'
+                      +     (done ? '已結案' : '加工中') + '</span>'
                       + '</div>'
                       + '<div style="background:#F9F8F6; border-radius:6px; padding:10px; margin-bottom:10px;">'
                       +   '<div style="font-size:14px; font-weight:600; color:#4A4A4A; margin-bottom:3px;">'
-                      +     (o.kind || '-') + ' · ' + (o.plant || '-') + '</div>'
-                      +   '<div style="font-size:12px; color:#6A6A6A;">廠商 ' + (o.vendor || '-')
-                      +     '　經手 ' + (o.handler || '-') + '</div>'
+                      +     (o.plant || '-') + '</div>'
+                      +   '<div style="font-size:12px; color:#6A6A6A;">廠商 ' + (o.vendor || '-') + '</div>'
                       + '</div>'
                       + '<div style="font-size:13px; color:#6A6A6A; line-height:1.7;">'
-                      +   specText + '　' + lenText + '<br>'
-                      +   '發出 ' + (o.outDate || '-')
-                      +   (done ? ('　結案 ' + (o.closeDate || '-')) : ('　預計 ' + (o.dueDate || '-')))
-                      +   '　<b style="color:#4A4A4A;">在外 ' + days + ' 天</b>'
+                      +   specText + '　' + lenText
                       + '</div></div>';
             });
 
             box.innerHTML = '<div style="font-size:12px; color:#8A8A8A; padding:2px 2px 10px;">'
-                + keys.length + ' 張加工單 · 共 ' + rows.length + ' 支'
-                + (done ? '' : (overdue ? (' · 逾期 ' + overdue + ' 張') : ' · 沒有逾期'))
-                + '</div>' + html;
+                + keys.length + ' 張加工單 · 共 ' + rows.length + ' 支</div>' + html;
         }
 
         function renderRemnantsBySpec() {
