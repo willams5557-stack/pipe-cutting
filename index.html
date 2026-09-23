@@ -3331,10 +3331,11 @@ v1.8
             renderRemnants();
         }
 
+        // 狀態只有兩種：待印、沒有。「已印」拿掉了 ——
+        // 一百多支管材不需要追蹤誰印過，印完就把待印清掉，
+        // 列表上剩下的待印就是還沒印的。列印在桌面版操作。
         function labelTagHtml(x) {
-            var st = x.qrStatus;
-            if (st === '已印') return ' <span style="font-size:11px; color:#15803D;">已印</span>';
-            if (st === '待印') return ' <span style="font-size:11px; color:#B45309;">待印</span>';
+            if (x.qrStatus === '待印') return ' <span style="font-size:11px; color:#B45309;">待印</span>';
             return '';
         }
 
