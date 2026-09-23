@@ -127,9 +127,10 @@ v1.8
                 db.ref('.info/connected').on('value', function(snap) {
                     firebaseConnected = snap.val() === true;
                     updateSyncIndicator();
-                    if (firebaseConnected) {
-                        try { ensureCodePool('01'); ensureCodePool('02'); } catch (e) {}
-                    }
+                    // v2.0.2 這裡原本會 ensureCodePool('01') + ensureCodePool('02')，
+                    // 等於「只要連上線就先預約 10+10 個號」，不管有沒有要新增。
+                    // 手機開一次 App 燒 20 個、4G 斷線重連再燒一次。
+                    // 改成「真的要新增餘料時才配號」，這裡不預約。
                 });
             } else {
                 console.warn('Firebase SDK 未載入，使用離線模式');
@@ -2976,6 +2977,19 @@ v1.8
         // 流水號管理（以 remnantCode 字串為依據，優先填補空號）
         // extraUsedCodes：同一批次中已分配但還沒寫入 remnants 的編號（避免批次內撞號）
         // 編號水位：記錄每個材質前綴「歷來發出過的最大號」，永不回收
+        // v2.0.2 一次性清理：舊版殘留在手機瀏覽器裡的預留號會在下次新增時
+        // 被發出來，並把伺服器計數器再往上推 —— 這就是 01284~01297 的來源。
+        (function () {
+            try {
+                if (localStorage.getItem('codeFix_v2') !== '1') {
+                    localStorage.removeItem('codePool_v1');
+                    localStorage.removeItem('codeSeq_v1');
+                    localStorage.setItem('codeFix_v2', '1');
+                    console.log('已清除舊版殘留的預留編號');
+                }
+            } catch (e) {}
+        })();
+
         var codeSeq = (function () {
             try { return JSON.parse(localStorage.getItem('codeSeq_v1') || '{}'); }
             catch (e) { return {}; }
@@ -3003,8 +3017,9 @@ v1.8
             try { localStorage.setItem('codePool_v1', JSON.stringify(codePool)); } catch (e) {}
         }
         var poolFilling = {};
-        var POOL_MIN = 3;    // 低於這個數量就補
-        var POOL_SIZE = 10;  // 每次補這麼多
+        // 池子開太大，沒用完就是純浪費（換裝置、清快取都會丟掉）。
+        var POOL_MIN = 1;    // 空了才補
+        var POOL_SIZE = 3;   // 一次只補 3 個
 
         function localMaxCode(material) {
             var mx = parseInt(codeSeq[material] || 0) || 0;
