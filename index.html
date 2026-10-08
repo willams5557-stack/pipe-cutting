@@ -2052,11 +2052,19 @@ v1.8
             localStorage.setItem('demands_v5', JSON.stringify(demands));
             // 記錄目前筆數（用於下次啟動時檢查）
             localStorage.setItem('lastRemnantCount', String(remnants.length));
+
+            // 旗標必須在任何非同步動作之前「同步」舉起來。
+            // 原本放在 .info/connected 的 .then() 裡，從函式 return 到 promise
+            // 解決這段空窗事件迴圈是放行的，on('value') 會用舊的遠端資料蓋掉
+            // 剛新增、還沒上傳的紀錄（2026-10-08 新增 5 支只存進 3 支即此因）。
+            // 下面每條提早結束的路徑都必須放旗，否則監聽器會被永久卡住。
+            isSyncing = true;
             
             var syncIndicator = document.getElementById('syncStatus');
             
             // 檢查 Firebase 連線狀態
             if (!db) {
+                isSyncing = false;
                 console.warn('Firebase 未初始化');
                 if (syncIndicator) {
                     syncIndicator.innerHTML = '📱 離線模式 (已存本機)';
@@ -2068,6 +2076,7 @@ v1.8
             // 重新檢查連線狀態
             db.ref('.info/connected').once('value').then(function(snap) {
                 if (snap.val() !== true) {
+                    isSyncing = false;
                     console.warn('Firebase 連線已斷開');
                     firebaseConnected = false;
                     if (syncIndicator) {
@@ -2094,7 +2103,7 @@ v1.8
                     updatedBy: 'mobile'
                 };
                 
-                isSyncing = true;
+                // isSyncing 已於函式開頭同步設定，這裡不再重複
                 
                 // 同步函數（帶重試）
                 var retryCount = 0;
@@ -2149,6 +2158,7 @@ v1.8
                 
                 attemptSync();
             }).catch(function(err) {
+                isSyncing = false;
                 console.error('Firebase 連線檢查失敗:', err);
                 if (syncIndicator) {
                     syncIndicator.innerHTML = '📱 離線模式 (已存本機)';
