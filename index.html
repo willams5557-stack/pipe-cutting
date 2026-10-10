@@ -127,6 +127,14 @@ v1.8
                 db.ref('.info/connected').on('value', function(snap) {
                     firebaseConnected = snap.val() === true;
                     updateSyncIndicator();
+                    // 本次開啟後第一次連上線時把池子補滿，之後靠 POOL_MIN 自動維持。
+                    // 池子存在 localStorage，已經有號的裝置會在 ensureCodePool 開頭
+                    // 直接 return，不會重複預約 —— 這跟舊版「每次連線都領 10+10」
+                    // （當初燒掉 200 多個號的原因）是不同的東西。
+                    if (firebaseConnected && !codePoolPrimed) {
+                        codePoolPrimed = true;
+                        try { ensureCodePool('01'); ensureCodePool('02'); } catch (e) {}
+                    }
                     // v2.0.2 這裡原本會 ensureCodePool('01') + ensureCodePool('02')，
                     // 等於「只要連上線就先預約 10+10 個號」，不管有沒有要新增。
                     // 手機開一次 App 燒 20 個、4G 斷線重連再燒一次。
@@ -2991,10 +2999,13 @@ v1.8
         // 被發出來，並把伺服器計數器再往上推 —— 這就是 01284~01297 的來源。
         (function () {
             try {
-                if (localStorage.getItem('codeFix_v2') !== '1') {
+                // v3（2026-10-10 配號改版）：舊規則下領到的預留號是照
+                // 「現有最大號 +1」配出來的（01322…），新規則要從 01098 起填空號，
+                // 所以舊的預留號得清掉，否則前幾筆還是會發到大號。
+                if (localStorage.getItem('codeFix_v3') !== '1') {
                     localStorage.removeItem('codePool_v1');
                     localStorage.removeItem('codeSeq_v1');
-                    localStorage.setItem('codeFix_v2', '1');
+                    localStorage.setItem('codeFix_v3', '1');
                     console.log('已清除舊版殘留的預留編號');
                 }
             } catch (e) {}
@@ -3027,9 +3038,12 @@ v1.8
             try { localStorage.setItem('codePool_v1', JSON.stringify(codePool)); } catch (e) {}
         }
         var poolFilling = {};
+        var codePoolPrimed = false;
         // 池子開太大，沒用完就是純浪費（換裝置、清快取都會丟掉）。
-        var POOL_MIN = 1;    // 空了才補
-        var POOL_SIZE = 3;   // 一次只補 3 個
+        // 池子要蓋得住一個批次。領到的號是伺服器排他配給本機的，
+        // 所以就算貨櫃裡 4G 斷掉，用這些號也不會跟別台撞。
+        var POOL_MIN = 12;   // 低於這個數就補
+        var POOL_SIZE = 24;  // 補到這個水位
 
         function localMaxCode(material) {
             var mx = parseInt(codeSeq[material] || 0) || 0;
@@ -3040,13 +3054,30 @@ v1.8
             return mx;
         }
 
+        var poolRefillRounds = {};
+
+        // 這個編號是不是已經發出去過了？
+        // 在庫的直接比對；已結案的要查 processHistory —— 那些管材雖然
+        // 不在庫存裡，但實體貼紙可能還貼在外面流通的料上，不能重發。
+        function isCodeTaken(code) {
+            for (var i = 0; i < remnants.length; i++) {
+                if (remnants[i].remnantCode === code) return true;
+            }
+            for (var j = 0; j < processHistory.length; j++) {
+                if (processHistory[j].code === code) return true;
+            }
+            return false;
+        }
+
         function ensureCodePool(material, n) {
             if (!material) return;
-            n = n || POOL_SIZE;
             if (!codePool[material]) codePool[material] = [];
             if (codePool[material].length >= POOL_MIN) return;
             if (poolFilling[material]) return;
             if (!db || !firebaseConnected) return;
+            // 補到 POOL_SIZE 的水位，不是每次固定加一批，
+            // 否則池子會越疊越高，換裝置時白白丟掉的號也跟著變多。
+            n = n || Math.max(1, POOL_SIZE - codePool[material].length);
 
             poolFilling[material] = true;
             var done = false;
@@ -3056,8 +3087,10 @@ v1.8
             }, 6000);
 
             db.ref('pipeData/codeSeq/' + material).transaction(function (cur) {
-                var base = Math.max(parseInt(cur || 0) || 0, localMaxCode(material));
-                return base + n;
+                // 純原子遞增。原本是 Math.max(cur, localMaxCode(material))，
+                // 那會把配號地板釘在「現有最大號」，先前漏掉的空號就永遠拿不到。
+                // 計數器本身就是唯一性來源，不需要再參考本機狀態。
+                return (parseInt(cur || 0) || 0) + n;
             }, function (err, committed, snap) {
                 clearTimeout(timer);
                 poolFilling[material] = false;
@@ -3068,13 +3101,31 @@ v1.8
                     return;
                 }
                 var end = parseInt(snap.val()) || 0;
+                var skipped = [];
                 for (var i = n - 1; i >= 0; i--) {
-                    codePool[material].push(material + String(end - i).padStart(3, '0'));
+                    var code = material + String(end - i).padStart(3, '0');
+                    // 計數器往上走會經過既有編號（貨櫃那幾支、已結案的號），
+                    // 那些發出去過、實體貼紙可能還在，必須跳過。
+                    if (isCodeTaken(code)) { skipped.push(code); continue; }
+                    codePool[material].push(code);
                 }
                 codeSeq[material] = end;
                 try { localStorage.setItem('codeSeq_v1', JSON.stringify(codeSeq)); } catch (e) {}
                 saveCodePool();
+                if (skipped.length) console.log('跳過已使用的編號:', skipped.join(','));
                 console.log('已向伺服器預約編號:', codePool[material].join(','));
+                // 整批都撞到既有編號時再補一次。計數器只增不減，
+                // 一定會走出既有區段，不會無限迴圈；仍加次數上限保險。
+                if (codePool[material].length < POOL_MIN) {
+                    poolRefillRounds[material] = (poolRefillRounds[material] || 0) + 1;
+                    if (poolRefillRounds[material] <= 5) {
+                        setTimeout(function () { ensureCodePool(material); }, 0);
+                    } else {
+                        console.warn('連續補池 5 次仍不足，暫停自動補池');
+                    }
+                } else {
+                    poolRefillRounds[material] = 0;
+                }
             });
         }
 
