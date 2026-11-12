@@ -3924,8 +3924,8 @@ v1.8
                     </div>
                     
                     <div style="margin-bottom: 15px;">
-                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">數量</label>
-                        <input type="number" id="editQty" value="${r.qty}" min="1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">數量 <span style="font-weight:normal;color:#999;">(一支一碼：改成 3 = 同規格再補 2 支，各自發新編號)</span></label>
+                        <input type="number" id="editQty" value="1" min="1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
                     </div>
                     
                     <div style="margin-bottom: 15px;">
@@ -4052,18 +4052,62 @@ v1.8
             }
             
             // 不拆分，直接修改全部
+            const newSize = document.getElementById('editSize').value;
+            const newThickness = NO_THICKNESS_TYPES.includes(newType) ? 0 : parseFloat(document.getElementById('editThickness').value) || 0;
+
             r.remnantCode = newRemnantCode;
             r.material = newMaterial;
             r.type = newType;
-            r.size = document.getElementById('editSize').value;
-            r.thickness = NO_THICKNESS_TYPES.includes(newType) ? 0 : parseFloat(document.getElementById('editThickness').value) || 0;
+            r.size = newSize;
+            r.thickness = newThickness;
             r.length = newLength;
-            r.qty = newQty;
             r.orderNo = newOrderNo;
-            
+
+            // v2.0 一支一碼：每筆紀錄的 qty 恆為 1。
+            // 在這裡把數量填成 n 代表「同規格又進了 n-1 支」，
+            // 所以不能把 n 寫回 r.qty —— 寫回去會變成：切割演算法照 r.qty 展開當 n 支排
+            // （見 optimize() 的「展開餘料」迴圈），但列表的「第幾/共幾」是數紀錄筆數的，
+            // 仍顯示單支破折號，而且只有 1 個編號 1 張貼紙 → 排出來的方案會超領料。
+            // 改成走「新增餘料」同一條路：展開成 n-1 筆各自獨立的紀錄，各自發編號。
+            r.qty = 1;
+            const extraCodes = [];
+            for (let i = 1; i < newQty; i++) {
+                const extraCode = getNextRemnantCode(newMaterial);
+                extraCodes.push(extraCode);
+                remnants.push({
+                    id: Date.now() + i * 1000 + Math.floor(Math.random() * 1000),
+                    material: newMaterial,
+                    remnantCode: extraCode,
+                    type: newType,
+                    size: newSize,
+                    thickness: newThickness,
+                    location: r.location,
+                    length: newLength,
+                    qty: 1,
+                    orderNo: newOrderNo
+                });
+            }
+
+            if (extraCodes.length > 0) {
+                // 排序：按材質、編號（與 addRemnant 一致）
+                remnants.sort((a, b) => {
+                    if (a.material !== b.material) return a.material.localeCompare(b.material);
+                    return a.remnantCode.localeCompare(b.remnantCode);
+                });
+            }
+
             saveToStorage();
             closeEditModal();
             renderRemnants();
+
+            if (extraCodes.length > 0) {
+                const extraText = extraCodes.length === 1
+                    ? extraCodes[0]
+                    : extraCodes[0] + ' ~ ' + extraCodes[extraCodes.length - 1] + '（共 ' + extraCodes.length + ' 筆）';
+                alert('一支一碼：已另外新增 ' + extraCodes.length + ' 支，各自一個編號\n'
+                    + extraText + '\n\n'
+                    + '列表的數量欄現在會顯示「第幾/共幾」。記得補印這幾張貼紙。');
+            }
         }
         
         // 編輯餘料類型
