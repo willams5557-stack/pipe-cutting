@@ -3925,7 +3925,7 @@ v1.8
                     
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 4px; font-size: 13px; color: #6A6A6A;">數量 <span style="font-weight:normal;color:#999;">(一支一碼：改成 3 = 同規格再補 2 支，各自發新編號)</span></label>
-                        <input type="number" id="editQty" value="1" min="1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                        <input type="number" id="editQty" value="${r.qty > 1 ? r.qty : 1}" min="1" style="width: 100%; padding: 10px; border: 1px solid #E8E6E3; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
                     </div>
                     
                     <div style="margin-bottom: 15px;">
@@ -4347,10 +4347,13 @@ v1.8
         }
         
         // 編輯餘料數量
-        // v1.3.0 起：一支一碼，qty 恆為 1，不開放直接編輯。
-        // 要增加庫存請用「新增餘料」（會自動展開成各自獨立的紀錄與編號）。
+        // v1.3.0 起：一支一碼，qty 恆為 1，所以列表這一格不開放就地編輯 ——
+        // 這一格顯示的是同規格的「第幾/共幾」，本來就不是支數。
+        // 2026-11-12：補支數有兩條路，兩條都會展開成各自獨立的紀錄，不會讓單筆 qty 大於 1：
+        //   1) 「新增餘料」填數量
+        //   2) 「編輯餘料」彈窗把數量填成目標支數（見 saveRemnantEdit）
         function editRemnantQty(remnantCode, cell) {
-            alert('一支一碼模式：每筆紀錄固定 1 支，不能直接改數量。要增加庫存請用「新增餘料」，系統會自動產生各自的編號與 QR。');
+            alert('這一格是同規格的「第幾/共幾」，不是支數，不能直接改。要補支數有兩條路：用「新增餘料」填數量，或用這一列的「編輯」把數量填成目標支數 —— 兩種都會自動展開成各自獨立的紀錄，各發一個編號與 QR。');
             renderRemnants();
             return;
         }
